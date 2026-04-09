@@ -1,0 +1,9 @@
+spring:
+  datasource:
+    url: ${GUARDIAN_DB_URL:jdbc:postgresql://localhost:5432/guardian}
+    username: ${GUARDIAN_DB_USERNAME:guardian}
+    password: ${GUARDIAN_DB_PASSWORD:guardian}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: none
