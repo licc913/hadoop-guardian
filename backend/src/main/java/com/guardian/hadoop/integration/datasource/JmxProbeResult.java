@@ -13,6 +13,7 @@ public class JmxProbeResult {
     private String message;
     private int beanCount;
     private List<String> sampleMetrics = new ArrayList<String>();
+    private List<String> observedMetrics = new ArrayList<String>();
 
     public Long getEndpointId() {
         return endpointId;
@@ -76,5 +77,13 @@ public class JmxProbeResult {
 
     public void setSampleMetrics(List<String> sampleMetrics) {
         this.sampleMetrics = sampleMetrics;
+    }
+
+    public List<String> getObservedMetrics() {
+        return observedMetrics;
+    }
+
+    public void setObservedMetrics(List<String> observedMetrics) {
+        this.observedMetrics = observedMetrics;
     }
 }

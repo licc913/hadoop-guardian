@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html
+  PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+
+<meta name="copyright" content="(C) Copyright 2025" />
+<meta name="DC.rights.owner" content="(C) Copyright 2025" />
+<meta name="DC.Type" content="concept" />
+<meta name="DC.Title" content="SYNC_DDL Query Option" />
+<meta name="DC.Relation" scheme="URI" content="../topics/impala_set.html" />
+<meta name="prodname" content="Impala" />
+<meta name="prodname" content="Impala" />
+<meta name="version" content="Impala 3.4.x" />
+<meta name="version" content="Impala 3.4.x" />
+<meta name="DC.Format" content="XHTML" />
+<meta name="DC.Identifier" content="sync_ddl" />
+<link rel="stylesheet" type="text/css" href="../commonltr.css" />
+<title>SYNC_DDL Query Option</title>
+</head>
+<body id="sync_ddl">
+
+
+  <h1 class="title topictitle1" id="ariaid-title1">SYNC_DDL Query Option</h1>
+
+  
+  
+
+  <div class="body conbody">
+
+    <p class="p">
+      
+      When enabled, causes any DDL operation such as <code class="ph codeph">CREATE TABLE</code> or <code class="ph codeph">ALTER TABLE</code>
+      to return only when the changes have been propagated to all other Impala nodes in the cluster by the Impala
+      catalog service. That way, if you issue a subsequent <code class="ph codeph">CONNECT</code> statement in
+      <span class="keyword cmdname">impala-shell</span> to connect to a different node in the cluster, you can be sure that other
+      node will already recognize any added or changed tables. (The catalog service automatically broadcasts the
+      DDL changes to all nodes automatically, but without this option there could be a period of inconsistency if
+      you quickly switched to another node, such as by issuing a subsequent query through a load-balancing proxy.)
+    </p>
+
+
+    <p class="p"> Although <code class="ph codeph">INSERT</code> is classified as a DML statement, when the
+        <code class="ph codeph">SYNC_DDL</code> option is enabled, <code class="ph codeph">INSERT</code> statements also delay
+      their completion until all the underlying data and metadata changes are propagated to all
+      Impala nodes and this option applies to all filesystem-based tables. Internally, Impala
+      inserts have similarities with DDL statements in traditional database systems, because they
+      create metadata needed to track HDFS block locations for new files and they potentially add
+      new partitions to partitioned tables. </p>
+
+
+    <div class="note note"><span class="notetitle">Note:</span> 
+      Because this option can introduce a delay after each write operation, if you are running a sequence of
+      <code class="ph codeph">CREATE DATABASE</code>, <code class="ph codeph">CREATE TABLE</code>, <code class="ph codeph">ALTER TABLE</code>,
+      <code class="ph codeph">INSERT</code>, and similar statements within a setup script, to minimize the overall delay you can
+      enable the <code class="ph codeph">SYNC_DDL</code> query option only near the end, before the final DDL statement.
+    </div>
+
+
+    <p class="p">
+        <strong class="ph b">Type:</strong> Boolean; recognized values are 1 and 0, or <code class="ph codeph">true</code> and
+        <code class="ph codeph">false</code>; any other value interpreted as <code class="ph codeph">false</code>
+      </p>
+
+    <p class="p">
+        <strong class="ph b">Default:</strong> <code class="ph codeph">false</code> (shown as 0 in output of <code class="ph codeph">SET</code>
+        statement)
+      </p>
+
+
+    
+
+    <p class="p">
+        <strong class="ph b">Related information:</strong>
+      </p>
+
+    <p class="p">
+      <a class="xref" href="impala_ddl.html#ddl">DDL Statements</a>
+    </p>
+
+
+  </div>
+
+<div class="related-links">
+<div class="familylinks">
+<div class="parentlink"><strong>Parent topic:</strong> <a class="link" href="../topics/impala_set.html">SET Statement</a></div>
+</div>
+</div></body>
+</html>

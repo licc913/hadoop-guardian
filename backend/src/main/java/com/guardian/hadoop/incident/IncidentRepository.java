@@ -8,4 +8,6 @@ public interface IncidentRepository extends JpaRepository<IncidentEntity, Long> 
     Optional<IncidentEntity> findByIncidentNo(String incidentNo);
 
     Optional<IncidentEntity> findBySourceId(String sourceId);
+
+    Optional<IncidentEntity> findBySourceTypeAndSourceId(String sourceType, String sourceId);
 }

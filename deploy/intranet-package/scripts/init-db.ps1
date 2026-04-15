@@ -41,7 +41,8 @@ if ($GuardianInitSchema) {
         "001_init_schema.sql",
         "003_workflow_schema.sql",
         "005_datasource_schema.sql",
-        "007_knowledge_base_schema.sql"
+        "007_knowledge_base_schema.sql",
+        "012_knowledge_document_chunk_schema.sql"
     )) {
         & $psql @dbArgs -f (Join-Path $sqlDir $file)
     }

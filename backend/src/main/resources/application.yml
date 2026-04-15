@@ -55,8 +55,8 @@ guardian:
     username: ${GUARDIAN_CM_USERNAME:admin}
     password: ${GUARDIAN_CM_PASSWORD:admin}
     cluster-name: ${GUARDIAN_CM_CLUSTER_NAME:cluster}
-    connect-timeout-ms: ${GUARDIAN_CM_CONNECT_TIMEOUT_MS:5000}
-    read-timeout-ms: ${GUARDIAN_CM_READ_TIMEOUT_MS:10000}
+    connect-timeout-ms: ${GUARDIAN_CM_CONNECT_TIMEOUT_MS:10000}
+    read-timeout-ms: ${GUARDIAN_CM_READ_TIMEOUT_MS:60000}
   llm:
     enabled: ${GUARDIAN_LLM_ENABLED:false}
     endpoint: ${GUARDIAN_LLM_ENDPOINT:}

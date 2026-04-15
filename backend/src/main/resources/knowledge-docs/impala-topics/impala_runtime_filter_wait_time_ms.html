@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html
+  PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+
+<meta name="copyright" content="(C) Copyright 2025" />
+<meta name="DC.rights.owner" content="(C) Copyright 2025" />
+<meta name="DC.Type" content="concept" />
+<meta name="DC.Title" content="RUNTIME_FILTER_WAIT_TIME_MS Query Option (Impala 2.5 or higher only)" />
+<meta name="DC.Relation" scheme="URI" content="../topics/impala_set.html" />
+<meta name="prodname" content="Impala" />
+<meta name="prodname" content="Impala" />
+<meta name="version" content="Impala 3.4.x" />
+<meta name="version" content="Impala 3.4.x" />
+<meta name="DC.Format" content="XHTML" />
+<meta name="DC.Identifier" content="runtime_filter_wait_time_ms" />
+<link rel="stylesheet" type="text/css" href="../commonltr.css" />
+<title>RUNTIME_FILTER_WAIT_TIME_MS Query Option (Impala 2.5 or higher only)</title>
+</head>
+<body id="runtime_filter_wait_time_ms">
+
+
+  <h1 class="title topictitle1" id="ariaid-title1">RUNTIME_FILTER_WAIT_TIME_MS Query Option (<span class="keyword">Impala 2.5</span> or higher only)</h1>
+
+  
+  
+
+  <div class="body conbody">
+
+    <p class="p">
+      
+      The <code class="ph codeph">RUNTIME_FILTER_WAIT_TIME_MS</code> query option
+      adjusts the settings for the runtime filtering feature.
+      It specifies a time in milliseconds that each scan node waits for
+      runtime filters to be produced by other plan fragments.
+      Note that the wait time for a runtime filter is with respect to the start of
+      processing the query in the given executor instead of the beginning of the Open
+      phase of a scan node. For instance, a scan node could start so late that at the
+      beginning of the Open phase of the scan node, the amount of time passed since the
+      start of query processing was already greater than the value of
+      <code class="ph codeph">RUNTIME_FILTER_WAIT_TIME_MS</code>. In such a case, even though the
+      runtime filter has not arrived yet, the scan node will not wait any longer.
+    </p>
+
+
+    <p class="p">
+        <strong class="ph b">Type:</strong> integer
+      </p>
+
+
+    <p class="p">
+      <strong class="ph b">Default:</strong> 0 (meaning use the value from the corresponding <span class="keyword cmdname">impalad</span> startup option)
+    </p>
+
+
+    <p class="p">
+        <strong class="ph b">Added in:</strong> <span class="keyword">Impala 2.5.0</span>
+      </p>
+
+
+    <p class="p">
+        <strong class="ph b">Usage notes:</strong>
+      </p>
+
+
+    <p class="p">
+        Because the runtime filtering feature applies mainly to resource-intensive and
+        long-running queries, only adjust this query option when tuning long-running queries
+        involving some combination of large partitioned tables and joins involving large tables.
+      </p>
+
+
+    <p class="p">
+        <strong class="ph b">Related information:</strong>
+      </p>
+
+    <p class="p">
+      <a class="xref" href="impala_runtime_filtering.html">Runtime Filtering for Impala Queries (Impala 2.5 or higher only)</a>,
+      <a class="xref" href="impala_runtime_filter_mode.html#runtime_filter_mode">RUNTIME_FILTER_MODE Query Option (Impala 2.5 or higher only)</a>
+      
+    </p>
+
+
+  </div>
+
+<div class="related-links">
+<div class="familylinks">
+<div class="parentlink"><strong>Parent topic:</strong> <a class="link" href="../topics/impala_set.html">SET Statement</a></div>
+</div>
+</div></body>
+</html>

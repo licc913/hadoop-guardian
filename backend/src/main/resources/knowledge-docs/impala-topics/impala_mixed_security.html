@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html
+  PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+
+<meta name="copyright" content="(C) Copyright 2025" />
+<meta name="DC.rights.owner" content="(C) Copyright 2025" />
+<meta name="DC.Type" content="concept" />
+<meta name="DC.Title" content="Using Multiple Authentication Methods with Impala" />
+<meta name="DC.Relation" scheme="URI" content="../topics/impala_authentication.html" />
+<meta name="prodname" content="Impala" />
+<meta name="prodname" content="Impala" />
+<meta name="version" content="Impala 3.4.x" />
+<meta name="version" content="Impala 3.4.x" />
+<meta name="DC.Format" content="XHTML" />
+<meta name="DC.Identifier" content="mixed_security" />
+<link rel="stylesheet" type="text/css" href="../commonltr.css" />
+<title>Using Multiple Authentication Methods with Impala</title>
+</head>
+<body id="mixed_security">
+
+
+  <h1 class="title topictitle1" id="ariaid-title1">Using Multiple Authentication Methods with Impala</h1>
+
+  
+
+  <div class="body conbody">
+
+    <p class="p">
+      Impala 2.0 and later automatically handles both Kerberos and LDAP authentication. Each
+      <span class="keyword cmdname">impalad</span> daemon can accept both Kerberos and LDAP requests through the same port. No
+      special actions need to be taken if some users authenticate through Kerberos and some through LDAP.
+    </p>
+
+
+    <p class="p">
+      Prior to Impala 2.0, you had to configure each <span class="keyword cmdname">impalad</span> to listen on a specific port
+      depending on the kind of authentication, then configure your network load balancer to forward each kind of
+      request to a DataNode that was set up with the appropriate authentication type. Once the initial request was
+      made using either Kerberos or LDAP authentication, Impala automatically handled the process of coordinating
+      the work across multiple nodes and transmitting intermediate results back to the coordinator node.
+    </p>
+
+
+
+  </div>
+
+<div class="related-links">
+<div class="familylinks">
+<div class="parentlink"><strong>Parent topic:</strong> <a class="link" href="../topics/impala_authentication.html">Impala Authentication</a></div>
+</div>
+</div></body>
+</html>

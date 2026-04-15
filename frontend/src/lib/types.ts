@@ -151,6 +151,11 @@ export type KnowledgeArticle = {
 
 export type KnowledgeArticleRequest = Omit<KnowledgeArticle, "id">;
 
+export type KnowledgeQuickEntryRequest = {
+  domain: string;
+  content: string;
+};
+
 export type DashboardSummary = {
   openIncidents: number;
   diagnosingIncidents: number;
@@ -180,6 +185,8 @@ export type CmServiceStatus = {
   roleCount: number;
   unhealthyRoleCount: number;
   roleHighlights: string[];
+  logHighlights: string[];
+  logPreviewLines: string[];
 };
 
 export type CmCurrentStatusResponse = {
@@ -274,6 +281,7 @@ export type JmxProbeResult = {
   message: string;
   beanCount: number;
   sampleMetrics: string[];
+  observedMetrics: string[];
 };
 
 export type JmxProbeResponse = {
@@ -307,6 +315,11 @@ export type LlmPromptResponse = {
   answer: string;
   model: string;
   respondedAt: string;
+};
+
+export type LlmChatMessage = {
+  role: "user" | "assistant";
+  content: string;
 };
 
 export type CurrentUser = {

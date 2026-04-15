@@ -1,0 +1,287 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html
+  PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+
+<meta name="copyright" content="(C) Copyright 2025" />
+<meta name="DC.rights.owner" content="(C) Copyright 2025" />
+<meta name="DC.Type" content="concept" />
+<meta name="DC.Title" content="INVALIDATE METADATA Statement" />
+<meta name="DC.Relation" scheme="URI" content="../topics/impala_langref_sql.html" />
+<meta name="prodname" content="Impala" />
+<meta name="prodname" content="Impala" />
+<meta name="version" content="Impala 3.4.x" />
+<meta name="version" content="Impala 3.4.x" />
+<meta name="DC.Format" content="XHTML" />
+<meta name="DC.Identifier" content="invalidate_metadata" />
+<link rel="stylesheet" type="text/css" href="../commonltr.css" />
+<title>INVALIDATE METADATA Statement</title>
+</head>
+<body id="invalidate_metadata">
+
+
+  <h1 class="title topictitle1" id="ariaid-title1">INVALIDATE METADATA Statement</h1>
+
+
+  
+
+  
+
+  <div class="body conbody">
+
+    <p class="p">
+      The <code class="ph codeph">INVALIDATE METADATA</code> statement marks the metadata for one or all
+      tables as stale. The next time the Impala service performs a query against a table whose
+      metadata is invalidated, Impala reloads the associated metadata before the query proceeds.
+      As this is a very expensive operation compared to the incremental metadata update done by
+      the <code class="ph codeph">REFRESH</code> statement, when possible, prefer <code class="ph codeph">REFRESH</code>
+      rather than <code class="ph codeph">INVALIDATE METADATA</code>.
+    </p>
+
+
+    <div class="p">
+      <code class="ph codeph">INVALIDATE METADATA</code> is required when the following changes are made
+      outside of Impala, in Hive and other Hive client, such as SparkSQL:
+      <ul class="ul">
+        <li class="li">
+          Metadata of existing tables changes.
+        </li>
+
+
+        <li class="li">
+          New tables are added, and Impala will use the tables.
+        </li>
+
+
+        <li class="li">
+          The <code class="ph codeph">SERVER</code> or <code class="ph codeph">DATABASE</code> level Ranger privileges are
+          changed.
+        </li>
+
+
+        <li class="li">
+          Block metadata changes, but the files remain the same (HDFS rebalance).
+        </li>
+
+
+        <li class="li">
+          UDF jars change.
+        </li>
+
+
+        <li class="li">
+          Some tables are no longer queried, and you want to remove their metadata from the
+          catalog and coordinator caches to reduce memory requirements.
+        </li>
+
+      </ul>
+
+    </div>
+
+
+    <p class="p">
+      No <code class="ph codeph">INVALIDATE METADATA</code> is needed when the changes are made by
+      <code class="ph codeph">impalad</code>.
+    </p>
+
+
+    <p class="p">
+      See <a class="xref" href="impala_hadoop.html#intro_metastore">Overview of Impala Metadata and the Metastore</a> for the information about the way
+      Impala uses metadata and how it shares the same metastore database as Hive.
+    </p>
+
+
+    <p class="p">
+      Once issued, the <code class="ph codeph">INVALIDATE METADATA</code> statement cannot be cancelled.
+    </p>
+
+
+    <p class="p">
+        <strong class="ph b">Syntax:</strong>
+      </p>
+
+
+<pre class="pre codeblock"><code>INVALIDATE METADATA [[<var class="keyword varname">db_name</var>.]<var class="keyword varname">table_name</var>]</code></pre>
+
+    <p class="p">
+      If there is no table specified, the cached metadata for all tables is flushed and synced
+      with Hive Metastore (HMS). If tables were dropped from the HMS, they will be removed from
+      the catalog, and if new tables were added, they will show up in the catalog.
+    </p>
+
+
+    <p class="p">
+      If you specify a table name, only the metadata for that one table is flushed and synced
+      with the HMS.
+    </p>
+
+
+    <p class="p">
+        <strong class="ph b">Usage notes:</strong>
+      </p>
+
+
+    <p class="p">
+      To return accurate query results, Impala need to keep the metadata current for the
+      databases and tables queried. Therefore, if some other entity modifies information used by
+      Impala in the metastore, the information cached by Impala must be updated via
+      <code class="ph codeph">INVALIDATE METADATA</code> or <code class="ph codeph">REFRESH</code>.
+    </p>
+
+
+    <div class="p">
+        <code class="ph codeph">INVALIDATE METADATA</code> and <code class="ph codeph">REFRESH</code> are counterparts:
+        <ul class="ul">
+          <li class="li">
+            <code class="ph codeph">INVALIDATE METADATA</code> is an asynchronous operations that simply
+            discards the loaded metadata from the catalog and coordinator caches. After that
+            operation, the catalog and all the Impala coordinators only know about the existence
+            of databases and tables and nothing more. Metadata loading for tables is triggered
+            by any subsequent queries.
+          </li>
+
+
+          <li class="li">
+            <code class="ph codeph">REFRESH</code> reloads the metadata synchronously.
+            <code class="ph codeph">REFRESH</code> is more lightweight than doing a full metadata load after a
+            table has been invalidated. <code class="ph codeph">REFRESH</code> cannot detect changes in block
+            locations triggered by operations like HDFS balancer, hence causing remote reads
+            during query execution with negative performance implications.
+          </li>
+
+        </ul>
+
+      </div>
+
+
+    <p class="p">
+      Use <code class="ph codeph">REFRESH</code> after invalidating a specific table to separate the metadata
+      load from the first query that's run against that table.
+    </p>
+
+
+    <p class="p">
+        <strong class="ph b">Examples:</strong>
+      </p>
+
+
+    <p class="p">
+      This example illustrates creating a new database and new table in Hive, then doing an
+      <code class="ph codeph">INVALIDATE METADATA</code> statement in Impala using the fully qualified table
+      name, after which both the new table and the new database are visible to Impala.
+    </p>
+
+
+    <p class="p">
+      Before the <code class="ph codeph">INVALIDATE METADATA</code> statement was issued, Impala would give a
+      <span class="q">"not found"</span> error if you tried to refer to those database or table names.
+    </p>
+
+
+<pre class="pre codeblock"><code>$ hive
+hive&gt; CREATE DATABASE new_db_from_hive;
+hive&gt; CREATE TABLE new_db_from_hive.new_table_from_hive (x INT);
+hive&gt; quit;
+
+$ impala-shell
+&gt; REFRESH new_db_from_hive.new_table_from_hive;
+ERROR: AnalysisException: Database does not exist: new_db_from_hive
+
+&gt; INVALIDATE METADATA new_db_from_hive.new_table_from_hive;
+
+&gt; SHOW DATABASES LIKE 'new*';
++--------------------+
+| new_db_from_hive   |
++--------------------+
+
+&gt; SHOW TABLES IN new_db_from_hive;
++---------------------+
+| new_table_from_hive |
++---------------------+</code></pre>
+
+    <p class="p">
+      Use the <code class="ph codeph">REFRESH</code> statement for incremental metadata update.
+    </p>
+
+
+<pre class="pre codeblock"><code>
+&gt; REFRESH new_table_from_hive;
+</code></pre>
+
+    <p class="p">
+      For more examples of using <code class="ph codeph">INVALIDATE METADATA</code> with a combination of
+      Impala and Hive operations, see
+      <a class="xref" href="impala_tutorial.html#tutorial_impala_hive">Switching Back and Forth Between Impala and Hive</a>.
+    </p>
+
+
+    <p class="p">
+        <strong class="ph b">HDFS considerations:</strong>
+      </p>
+
+
+    <p class="p">
+      By default, the <code class="ph codeph">INVALIDATE METADATA</code> command checks HDFS permissions of
+      the underlying data files and directories, caching this information so that a statement
+      can be cancelled immediately if for example the <code class="ph codeph">impala</code> user does not have
+      permission to write to the data directory for the table. (This checking does not apply
+      when the <span class="keyword cmdname">catalogd</span> configuration option
+      <code class="ph codeph">--load_catalog_in_background</code> is set to <code class="ph codeph">false</code>, which it
+      is by default.) Impala reports any lack of write permissions as an <code class="ph codeph">INFO</code>
+      message in the log file.
+    </p>
+
+
+    <p class="p">
+      If you change HDFS permissions to make data readable or writeable by the Impala user,
+      issue another <code class="ph codeph">INVALIDATE METADATA</code> to make Impala aware of the change.
+    </p>
+
+
+    <p class="p">
+        <strong class="ph b">Kudu considerations:</strong>
+      </p>
+
+
+    <p class="p">By default, much of the metadata
+        for Kudu tables is handled by the underlying storage layer. Kudu tables
+        have less reliance on the Metastore database, and require less metadata
+        caching on the Impala side. For example, information about partitions in
+        Kudu tables is managed by Kudu, and Impala does not cache any block
+        locality metadata for Kudu tables. If the Kudu service is not integrated
+        with the Hive Metastore, Impala will manage Kudu table metadata in the
+        Hive Metastore.</p>
+
+
+    <p class="p">
+        The <code class="ph codeph">REFRESH</code> and <code class="ph codeph">INVALIDATE METADATA</code> statements are
+        needed less frequently for Kudu tables than for HDFS-backed tables. Neither statement is
+        needed when data is added to, removed, or updated in a Kudu table, even if the changes
+        are made directly to Kudu through a client program using the Kudu API. Run
+        <code class="ph codeph">REFRESH <var class="keyword varname">table_name</var></code> or <code class="ph codeph">INVALIDATE METADATA
+        <var class="keyword varname">table_name</var></code> for a Kudu table only after making a change to
+        the Kudu table schema, such as adding or dropping a column.
+      </p>
+
+
+    <p class="p">
+        <strong class="ph b">Related information:</strong>
+      </p>
+
+
+    <p class="p">
+      <a class="xref" href="impala_hadoop.html#intro_metastore">Overview of Impala Metadata and the Metastore</a>,
+      <a class="xref" href="impala_refresh.html#refresh">REFRESH Statement</a>
+    </p>
+
+
+  </div>
+
+
+<div class="related-links">
+<div class="familylinks">
+<div class="parentlink"><strong>Parent topic:</strong> <a class="link" href="../topics/impala_langref_sql.html">Impala SQL Statements</a></div>
+</div>
+</div></body>
+</html>

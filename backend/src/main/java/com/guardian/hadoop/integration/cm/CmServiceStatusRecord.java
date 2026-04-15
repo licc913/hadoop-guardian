@@ -13,6 +13,8 @@ public class CmServiceStatusRecord {
     private final int roleCount;
     private final int unhealthyRoleCount;
     private final List<String> roleHighlights;
+    private final List<String> logHighlights;
+    private final List<String> logPreviewLines;
 
     public CmServiceStatusRecord(String serviceName,
                                  String serviceType,
@@ -21,7 +23,9 @@ public class CmServiceStatusRecord {
                                  String entityStatus,
                                  int roleCount,
                                  int unhealthyRoleCount,
-                                 List<String> roleHighlights) {
+                                 List<String> roleHighlights,
+                                 List<String> logHighlights,
+                                 List<String> logPreviewLines) {
         this.serviceName = serviceName;
         this.serviceType = serviceType;
         this.serviceState = serviceState;
@@ -30,6 +34,8 @@ public class CmServiceStatusRecord {
         this.roleCount = roleCount;
         this.unhealthyRoleCount = unhealthyRoleCount;
         this.roleHighlights = roleHighlights == null ? new ArrayList<String>() : roleHighlights;
+        this.logHighlights = logHighlights == null ? new ArrayList<String>() : logHighlights;
+        this.logPreviewLines = logPreviewLines == null ? new ArrayList<String>() : logPreviewLines;
     }
 
     public String getServiceName() {
@@ -62,5 +68,13 @@ public class CmServiceStatusRecord {
 
     public List<String> getRoleHighlights() {
         return roleHighlights;
+    }
+
+    public List<String> getLogHighlights() {
+        return logHighlights;
+    }
+
+    public List<String> getLogPreviewLines() {
+        return logPreviewLines;
     }
 }

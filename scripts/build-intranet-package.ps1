@@ -85,7 +85,8 @@ foreach ($file in @(
     "007_knowledge_base_schema.sql",
     "009_postgres_demo_data_zh.sql",
     "010_cleanup_duplicate_demo_incidents.sql",
-    "011_cleanup_demo_seed_data.sql"
+    "011_cleanup_demo_seed_data.sql",
+    "012_knowledge_document_chunk_schema.sql"
 )) {
     Copy-Item -Force (Join-Path $projectRoot "sql\$file") (Join-Path $stagingDir "sql\$file")
 }

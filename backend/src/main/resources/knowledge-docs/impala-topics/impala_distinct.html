@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html
+  PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+
+<meta name="copyright" content="(C) Copyright 2025" />
+<meta name="DC.rights.owner" content="(C) Copyright 2025" />
+<meta name="DC.Type" content="concept" />
+<meta name="DC.Title" content="DISTINCT Operator" />
+<meta name="DC.Relation" scheme="URI" content="../topics/impala_select.html" />
+<meta name="prodname" content="Impala" />
+<meta name="prodname" content="Impala" />
+<meta name="version" content="Impala 3.4.x" />
+<meta name="version" content="Impala 3.4.x" />
+<meta name="DC.Format" content="XHTML" />
+<meta name="DC.Identifier" content="distinct" />
+<link rel="stylesheet" type="text/css" href="../commonltr.css" />
+<title>DISTINCT Operator</title>
+</head>
+<body id="distinct">
+
+
+  <h1 class="title topictitle1" id="ariaid-title1">DISTINCT Operator</h1>
+
+
+  
+
+  <div class="body conbody">
+
+    <p class="p">
+      The <code class="ph codeph">DISTINCT</code> operator in a <code class="ph codeph">SELECT</code> statement filters the
+      result set to remove duplicates.
+    </p>
+
+
+<pre class="pre codeblock"><code>-- Returns the unique values from one column.
+-- NULL is included in the set of values if any rows have a NULL in this column.
+SELECT DISTINCT c_birth_country FROM customer;
+
+-- Returns the unique combinations of values from multiple columns.
+SELECT DISTINCT c_salutation, c_last_name FROM customer;</code></pre>
+
+    <p class="p">
+      You can use <code class="ph codeph">DISTINCT</code> in combination with an aggregation function,
+      typically <code class="ph codeph">COUNT()</code>, to find how many different values a column contains.
+    </p>
+
+
+<pre class="pre codeblock"><code>-- Counts the unique values from one column.
+-- NULL is not included as a distinct value in the count.
+SELECT COUNT(DISTINCT c_birth_country) FROM customer;
+
+-- Counts the unique combinations of values from multiple columns.
+SELECT COUNT(DISTINCT c_salutation, c_last_name) FROM customer;</code></pre>
+
+    <p class="p">
+        <strong class="ph b">Zero-length strings:</strong> For purposes of clauses such as <code class="ph codeph">DISTINCT</code>
+        and <code class="ph codeph">GROUP BY</code>, Impala considers zero-length strings
+        (<code class="ph codeph">""</code>), <code class="ph codeph">NULL</code>, and space to all be different values.
+      </p>
+
+
+    <div class="note note"><span class="notetitle">Note:</span> 
+      <p class="p">
+        In contrast with some database systems that always return <code class="ph codeph">DISTINCT</code>
+        values in sorted order, Impala does not do any ordering of <code class="ph codeph">DISTINCT</code>
+        values. Always include an <code class="ph codeph">ORDER BY</code> clause if you need the values in
+        alphabetical or numeric sorted order.
+      </p>
+
+    </div>
+
+
+  </div>
+
+
+<div class="related-links">
+<div class="familylinks">
+<div class="parentlink"><strong>Parent topic:</strong> <a class="link" href="../topics/impala_select.html">SELECT Statement</a></div>
+</div>
+</div></body>
+</html>

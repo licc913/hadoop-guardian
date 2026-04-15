@@ -5,14 +5,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.guardian.hadoop.incident.IncidentEntity;
 import com.guardian.hadoop.integration.llm.DiagnosisLlmSettingsEntity;
 import com.guardian.hadoop.integration.llm.DiagnosisLlmSettingsService;
+import com.guardian.hadoop.knowledge.KnowledgeSuggestionRecord;
+import com.guardian.hadoop.knowledge.KnowledgeSuggestionService;
 import java.io.IOException;
+import java.net.SocketTimeoutException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpEntity;
@@ -20,6 +21,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.client.RestTemplate;
 
@@ -30,21 +32,32 @@ public class LlmDiagnosisService {
 
     private final DiagnosisLlmSettingsService settingsService;
     private final ObjectMapper objectMapper;
+    private final KnowledgeSuggestionService knowledgeSuggestionService;
 
-    public LlmDiagnosisService(DiagnosisLlmSettingsService settingsService, ObjectMapper objectMapper) {
+    public LlmDiagnosisService(DiagnosisLlmSettingsService settingsService,
+                               ObjectMapper objectMapper,
+                               KnowledgeSuggestionService knowledgeSuggestionService) {
         this.settingsService = settingsService;
         this.objectMapper = objectMapper;
+        this.knowledgeSuggestionService = knowledgeSuggestionService;
     }
 
     public LlmDiagnosisResult generate(IncidentEntity incident, String triggerReason, String triggerBy) {
         DiagnosisLlmSettingsEntity settings = settingsService.getEffectiveSettings();
         boolean configured = hasText(settings.getEndpoint()) && hasText(settings.getApiKey()) && hasText(settings.getModel());
         if (!settings.isEnabled() && !configured) {
-            return LlmDiagnosisResult.failure("AI 大模型诊断未启用。", "请先在设置页启用或补齐大模型配置。");
+            return LlmDiagnosisResult.failure("AI diagnosis is disabled.", "Enable and save the LLM settings first.");
         }
         if (!configured) {
-            return LlmDiagnosisResult.failure("AI 大模型配置不完整。", "请检查接口地址、API Key 和模型名称是否都已正确保存。");
+            return LlmDiagnosisResult.failure("AI diagnosis settings are incomplete.", "Check endpoint, API key, and model.");
         }
+
+        List<KnowledgeSuggestionRecord> knowledgeSuggestions = knowledgeSuggestionService.search(
+            incident.getServiceType(),
+            safe(incident.getTitle()) + "\n" + safe(incident.getSummary()) + "\n" + String.join("\n", incident.getEvidence()),
+            3
+        );
+        String prompt = buildIncidentPrompt(incident, triggerReason, triggerBy, knowledgeSuggestions);
 
         try {
             HttpHeaders headers = new HttpHeaders();
@@ -58,10 +71,10 @@ public class LlmDiagnosisService {
             if (settings.getMaxTokens() > 0) {
                 payload.put("max_tokens", settings.getMaxTokens());
             }
-            payload.put("messages", buildMessages(incident, triggerReason, triggerBy));
+            payload.put("messages", buildMessages(prompt));
 
             @SuppressWarnings("unchecked")
-            Map<String, Object> response = createRestTemplate(settings).postForObject(
+            Map<String, Object> response = createRestTemplate(settings, prompt).postForObject(
                 settings.getEndpoint().trim(),
                 new HttpEntity<Map<String, Object> >(payload, headers),
                 Map.class
@@ -70,7 +83,7 @@ public class LlmDiagnosisService {
             String content = extractContent(response);
             if (!hasText(content)) {
                 return LlmDiagnosisResult.failure(
-                    "AI 大模型接口已响应，但没有返回可解析的诊断内容。",
+                    "AI returned no diagnosis content.",
                     summarizeResponse(response)
                 );
             }
@@ -78,34 +91,48 @@ public class LlmDiagnosisService {
             try {
                 return LlmDiagnosisResult.success(parseBlueprint(content, incident.getServiceType()));
             } catch (IOException parseException) {
-                logger.warn("Failed to parse JSON diagnosis result, falling back to plain text blueprint", parseException);
+                logger.warn("Failed to parse LLM diagnosis JSON, falling back to plain text blueprint", parseException);
                 return LlmDiagnosisResult.success(buildPlainTextBlueprint(content, incident.getServiceType()));
             }
         } catch (RestClientResponseException exception) {
-            logger.warn("External LLM request failed", exception);
-            return LlmDiagnosisResult.failure("AI 大模型请求失败。", buildHttpErrorDetails(exception));
+            logger.warn("External LLM diagnosis request failed", exception);
+            return LlmDiagnosisResult.failure("AI request failed.", buildHttpErrorDetails(exception));
+        } catch (ResourceAccessException exception) {
+            logger.warn("External LLM diagnosis timed out or was unreachable", exception);
+            Throwable root = exception.getMostSpecificCause();
+            if (root instanceof SocketTimeoutException) {
+                return LlmDiagnosisResult.failure(
+                    "AI diagnosis timed out.",
+                    "Current read timeout=" + effectiveReadTimeout(settings, prompt)
+                        + "ms. Reduce prompt size or increase the timeout."
+                );
+            }
+            return LlmDiagnosisResult.failure(
+                "AI request failed.",
+                defaultIfBlank(exception.getMessage(), exception.getClass().getSimpleName())
+            );
         } catch (Exception exception) {
             logger.warn("Failed to generate diagnosis from external LLM", exception);
             return LlmDiagnosisResult.failure(
-                "AI 大模型返回结果无法解析。",
+                "AI response could not be parsed.",
                 defaultIfBlank(exception.getMessage(), exception.getClass().getSimpleName())
             );
         }
     }
 
-    private List<Map<String, String> > buildMessages(IncidentEntity incident, String triggerReason, String triggerBy) {
+    private List<Map<String, String> > buildMessages(String prompt) {
         List<Map<String, String> > messages = new ArrayList<Map<String, String> >();
         messages.add(message(
             "system",
-            "你是 Hadoop 平台故障诊断助手。请基于事件信息输出一个 JSON 对象，不要输出 markdown，不要输出多余说明。"
-                + " 字段必须包含 rootCause、confidence、impactLevel、crossComponentPath、recommendations、followUps、"
-                + "actionName、actionType、actionRiskLevel、actionRequiresApproval、actionRecommendationText。"
-                + " actionType 只能是 EVIDENCE_COLLECTION、DIAGNOSTIC_COLLECTION、GUARDED_SCRIPT 之一。"
-                + " actionRiskLevel 只能是 LOW、MEDIUM、HIGH、CRITICAL 之一。"
-                + " impactLevel 只能是 SEV1、SEV2、SEV3 之一。"
-                + " recommendations 最多 3 条，followUps 最多 2 条。"
+            "You are a senior CDP and Hadoop platform diagnosis expert. "
+                + "You specialize in Cloudera Manager, role logs, JMX, HDFS, YARN, Hive, Impala, Spark, Kafka, HBase, Ranger, and ZooKeeper. "
+                + "You must return a single JSON object only. "
+                + "Do not output markdown, explanations, or code fences. "
+                + "Required fields: rootCause, confidence, impactLevel, crossComponentPath, recommendations, followUps, "
+                + "actionName, actionType, actionRiskLevel, actionRequiresApproval, actionRecommendationText. "
+                + "Use current evidence first. Do not treat historical incidents as current facts."
         ));
-        messages.add(message("user", buildIncidentPrompt(incident, triggerReason, triggerBy)));
+        messages.add(message("user", prompt));
         return messages;
     }
 
@@ -116,48 +143,54 @@ public class LlmDiagnosisService {
         return message;
     }
 
-    private String buildIncidentPrompt(IncidentEntity incident, String triggerReason, String triggerBy) {
+    private String buildIncidentPrompt(IncidentEntity incident,
+                                       String triggerReason,
+                                       String triggerBy,
+                                       List<KnowledgeSuggestionRecord> knowledgeSuggestions) {
         StringBuilder builder = new StringBuilder();
-        builder.append("请根据下面事件生成 JSON。\n");
-        builder.append("JSON schema:\n");
-        builder.append("{");
-        builder.append("\"rootCause\":string,");
-        builder.append("\"confidence\":number,");
-        builder.append("\"impactLevel\":string,");
-        builder.append("\"crossComponentPath\":string,");
-        builder.append("\"recommendations\":string[],");
-        builder.append("\"followUps\":string[],");
-        builder.append("\"actionName\":string,");
-        builder.append("\"actionType\":string,");
-        builder.append("\"actionRiskLevel\":string,");
-        builder.append("\"actionRequiresApproval\":boolean,");
-        builder.append("\"actionRecommendationText\":string");
-        builder.append("}\n");
-        builder.append("事件编号：").append(safe(incident.getIncidentNo())).append("\n");
-        builder.append("服务类型：").append(safe(incident.getServiceType())).append("\n");
-        builder.append("严重级别：").append(safe(incident.getSeverity())).append("\n");
-        builder.append("事件状态：").append(safe(incident.getStatus())).append("\n");
-        builder.append("标题：").append(safe(incident.getTitle())).append("\n");
-        builder.append("摘要：").append(safe(incident.getSummary())).append("\n");
-        builder.append("影响范围：").append(safe(incident.getImpactScope())).append("\n");
-        builder.append("责任人：").append(safe(incident.getOwner())).append("\n");
-        builder.append("触发人：").append(defaultIfBlank(triggerBy, "未知")).append("\n");
-        builder.append("触发原因：").append(defaultIfBlank(triggerReason, "人工发起诊断")).append("\n");
-        builder.append("证据：\n");
-        appendList(builder, incident.getEvidence());
-        builder.append("避免动作：\n");
-        appendList(builder, incident.getAvoidedActions());
-        builder.append("要求：结论必须简洁、可执行、保守，建议动作不要超出当前证据太多。");
+        builder.append("Analyze the incident below and return JSON only.\n");
+        builder.append("incidentNo: ").append(safe(incident.getIncidentNo())).append("\n");
+        builder.append("serviceType: ").append(safe(incident.getServiceType())).append("\n");
+        builder.append("severity: ").append(safe(incident.getSeverity())).append("\n");
+        builder.append("status: ").append(safe(incident.getStatus())).append("\n");
+        builder.append("title: ").append(truncate(safe(incident.getTitle()), 220)).append("\n");
+        builder.append("summary: ").append(truncate(safe(incident.getSummary()), 300)).append("\n");
+        builder.append("impactScope: ").append(truncate(safe(incident.getImpactScope()), 220)).append("\n");
+        builder.append("owner: ").append(defaultIfBlank(incident.getOwner(), "UNKNOWN")).append("\n");
+        builder.append("triggerBy: ").append(defaultIfBlank(triggerBy, "UNKNOWN")).append("\n");
+        builder.append("triggerReason: ").append(defaultIfBlank(triggerReason, "manual diagnosis")).append("\n");
+        builder.append("Evidence:\n");
+        appendList(builder, incident.getEvidence(), 6, 240);
+        builder.append("Avoided actions:\n");
+        appendList(builder, incident.getAvoidedActions(), 3, 180);
+        if (knowledgeSuggestions != null && !knowledgeSuggestions.isEmpty()) {
+            builder.append("Knowledge matches:\n");
+            for (KnowledgeSuggestionRecord suggestion : knowledgeSuggestions) {
+                builder.append("- title: ").append(defaultIfBlank(suggestion.getTitle(), "Untitled knowledge article"))
+                    .append(" | domain: ").append(defaultIfBlank(suggestion.getDomain(), "UNKNOWN"))
+                    .append(" | summary: ").append(truncate(defaultIfBlank(suggestion.getSummary(), "N/A"), 200))
+                    .append("\n");
+            }
+        }
+        builder.append("Requirements:\n");
+        builder.append("- Base the diagnosis on current evidence only.\n");
+        builder.append("- Prefer role logs, JMX, service state, SQL execution context, and dependencies.\n");
+        builder.append("- If evidence is insufficient, say that in followUps instead of inventing facts.\n");
         return builder.toString();
     }
 
-    private void appendList(StringBuilder builder, List<String> values) {
+    private void appendList(StringBuilder builder, List<String> values, int limit, int maxItemLength) {
         if (values == null || values.isEmpty()) {
-            builder.append("- 无\n");
+            builder.append("- none\n");
             return;
         }
+        int count = 0;
         for (String value : values) {
-            builder.append("- ").append(safe(value)).append("\n");
+            builder.append("- ").append(truncate(safe(value), maxItemLength)).append("\n");
+            count++;
+            if (count >= limit) {
+                break;
+            }
         }
     }
 
@@ -199,21 +232,28 @@ public class LlmDiagnosisService {
     private DiagnosisBlueprint parseBlueprint(String content, String serviceType) throws IOException {
         String sanitized = sanitizeJsonBlock(content);
         JsonNode root = objectMapper.readTree(sanitized);
-
-        String rootCause = truncate(readText(root, "rootCause",
-            safe(serviceType) + " 方向存在异常，需要结合更多证据确认最终根因。"), 256);
+        String rootCause = truncate(
+            readText(root, "rootCause", safe(serviceType) + " shows abnormal behavior and needs more evidence."),
+            256
+        );
         double confidence = clamp(readDouble(root, "confidence", 0.66d), 0.1d, 0.95d);
         String impactLevel = normalizeOneOf(readText(root, "impactLevel", "SEV2"), Arrays.asList("SEV1", "SEV2", "SEV3"), "SEV2");
         String crossComponentPath = truncate(readText(root, "crossComponentPath", safe(serviceType)), 128);
-        List<String> recommendations = readTextList(root.get("recommendations"), 3, "先复核现有证据，再决定是否扩展处置范围。");
-        List<String> followUps = readTextList(root.get("followUps"), 2, "补充更多证据后刷新诊断结论。");
-        String actionName = truncate(readText(root, "actionName", "生成诊断建议"), 128);
-        String actionType = normalizeOneOf(readText(root, "actionType", "EVIDENCE_COLLECTION"),
-            Arrays.asList("EVIDENCE_COLLECTION", "DIAGNOSTIC_COLLECTION", "GUARDED_SCRIPT"), "EVIDENCE_COLLECTION");
-        String actionRiskLevel = normalizeOneOf(readText(root, "actionRiskLevel", "LOW"),
-            Arrays.asList("LOW", "MEDIUM", "HIGH", "CRITICAL"), "LOW");
+        List<String> recommendations = readTextList(root.get("recommendations"), 3, "Validate current evidence before expanding remediation scope.");
+        List<String> followUps = readTextList(root.get("followUps"), 2, "Collect more evidence and refresh the diagnosis.");
+        String actionName = truncate(readText(root, "actionName", "Generate diagnosis recommendation"), 128);
+        String actionType = normalizeOneOf(
+            readText(root, "actionType", "EVIDENCE_COLLECTION"),
+            Arrays.asList("EVIDENCE_COLLECTION", "DIAGNOSTIC_COLLECTION", "GUARDED_SCRIPT"),
+            "EVIDENCE_COLLECTION"
+        );
+        String actionRiskLevel = normalizeOneOf(
+            readText(root, "actionRiskLevel", "LOW"),
+            Arrays.asList("LOW", "MEDIUM", "HIGH", "CRITICAL"),
+            "LOW"
+        );
         boolean actionRequiresApproval = readBoolean(root, "actionRequiresApproval", false);
-        String actionRecommendationText = readText(root, "actionRecommendationText", "请先补采更多证据，再决定是否执行受控动作。");
+        String actionRecommendationText = readText(root, "actionRecommendationText", recommendations.get(0));
 
         return new DiagnosisBlueprint(
             rootCause,
@@ -232,14 +272,18 @@ public class LlmDiagnosisService {
     }
 
     private DiagnosisBlueprint buildPlainTextBlueprint(String content, String serviceType) {
-        String normalized = defaultIfBlank(content, "模型未返回有效内容")
+        String normalized = defaultIfBlank(content, "Model returned no valid content.")
             .replace("\r", "\n")
             .replaceAll("\n{2,}", "\n")
             .trim();
-        List<String> lines = Arrays.stream(normalized.split("\n"))
-            .map(String::trim)
-            .filter(this::hasText)
-            .collect(Collectors.toList());
+        String[] rawLines = normalized.split("\n");
+        List<String> lines = new ArrayList<String>();
+        for (String rawLine : rawLines) {
+            String line = rawLine == null ? "" : rawLine.trim();
+            if (hasText(line)) {
+                lines.add(line);
+            }
+        }
 
         String rootCause = truncate(lines.isEmpty() ? normalized : lines.get(0), 256);
         List<String> recommendations = new ArrayList<String>();
@@ -247,7 +291,7 @@ public class LlmDiagnosisService {
             recommendations.add(lines.get(index));
         }
         if (recommendations.isEmpty()) {
-            recommendations.add("先复核模型输出与当前事件证据是否一致，再决定是否扩展处置范围。");
+            recommendations.add("Validate current evidence before expanding remediation scope.");
         }
 
         return new DiagnosisBlueprint(
@@ -256,8 +300,8 @@ public class LlmDiagnosisService {
             "SEV2",
             safe(serviceType),
             recommendations,
-            Arrays.asList("回填更多运行指标后复核诊断结论。", "如涉及风险动作，请走审批流程。"),
-            "复核 AI 诊断结论",
+            Arrays.asList("Collect more runtime evidence.", "If the action is risky, route it through approval."),
+            "Review AI diagnosis result",
             "DIAGNOSTIC_COLLECTION",
             "LOW",
             false,
@@ -272,7 +316,6 @@ public class LlmDiagnosisService {
             trimmed = trimmed.replaceFirst("^```(?:json)?\\s*", "");
             trimmed = trimmed.replaceFirst("\\s*```$", "");
         }
-
         int firstBrace = trimmed.indexOf('{');
         int lastBrace = trimmed.lastIndexOf('}');
         if (firstBrace >= 0 && lastBrace > firstBrace) {
@@ -283,18 +326,22 @@ public class LlmDiagnosisService {
 
     private String summarizeResponse(Map<String, Object> response) {
         if (response == null || response.isEmpty()) {
-            return "响应体为空。";
+            return "Empty response body.";
         }
         try {
             return truncate(objectMapper.writeValueAsString(response), 500);
         } catch (Exception ignored) {
-            return "响应体无法序列化。";
+            return "Response body could not be serialized.";
         }
     }
 
     private String buildHttpErrorDetails(RestClientResponseException exception) {
-        return "HTTP " + exception.getRawStatusCode() + " " + exception.getStatusText()
-            + " | " + truncate(defaultIfBlank(exception.getResponseBodyAsString(), "无响应体"), 800);
+        return "HTTP "
+            + exception.getRawStatusCode()
+            + " "
+            + exception.getStatusText()
+            + " | "
+            + truncate(defaultIfBlank(exception.getResponseBodyAsString(), "empty response body"), 800);
     }
 
     private String readText(JsonNode root, String fieldName, String fallback) {
@@ -335,29 +382,44 @@ public class LlmDiagnosisService {
     }
 
     private String normalizeOneOf(String value, List<String> allowedValues, String fallback) {
-        String normalized = safe(value).toUpperCase(Locale.ROOT);
+        if (!hasText(value)) {
+            return fallback;
+        }
+        String candidate = value.trim().toUpperCase();
         for (String allowedValue : allowedValues) {
-            if (allowedValue.equalsIgnoreCase(normalized)) {
+            if (allowedValue.equalsIgnoreCase(candidate)) {
                 return allowedValue;
             }
         }
         return fallback;
     }
 
-    private double clamp(double value, double min, double max) {
-        return Math.max(min, Math.min(max, value));
-    }
-
-    private String truncate(String value, int maxLength) {
-        String safeValue = safe(value);
-        return safeValue.length() <= maxLength ? safeValue : safeValue.substring(0, maxLength);
-    }
-
-    private RestTemplate createRestTemplate(DiagnosisLlmSettingsEntity settings) {
+    private RestTemplate createRestTemplate(DiagnosisLlmSettingsEntity settings, String prompt) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(settings.getConnectTimeoutMs());
-        factory.setReadTimeout(settings.getReadTimeoutMs());
+        factory.setConnectTimeout(Math.max(settings.getConnectTimeoutMs(), 10000));
+        factory.setReadTimeout(effectiveReadTimeout(settings, prompt));
         return new RestTemplate(factory);
+    }
+
+    private int effectiveReadTimeout(DiagnosisLlmSettingsEntity settings, String prompt) {
+        int configured = Math.max(settings.getReadTimeoutMs(), 60000);
+        if (prompt != null && prompt.length() > 2500) {
+            return Math.max(configured, 240000);
+        }
+        if (prompt != null && prompt.length() > 1200) {
+            return Math.max(configured, 180000);
+        }
+        return Math.max(configured, 120000);
+    }
+
+    private double clamp(double value, double min, double max) {
+        if (value < min) {
+            return min;
+        }
+        if (value > max) {
+            return max;
+        }
+        return value;
     }
 
     private boolean hasText(String value) {
@@ -368,7 +430,12 @@ public class LlmDiagnosisService {
         return hasText(value) ? value.trim() : fallback;
     }
 
+    private String truncate(String value, int maxLength) {
+        String safeValue = safe(value);
+        return safeValue.length() <= maxLength ? safeValue : safeValue.substring(0, maxLength);
+    }
+
     private String safe(String value) {
-        return value == null ? "" : value;
+        return value == null ? "" : value.trim();
     }
 }

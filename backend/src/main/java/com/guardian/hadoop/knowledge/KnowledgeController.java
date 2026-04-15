@@ -35,6 +35,12 @@ public class KnowledgeController {
         return knowledgeArticleService.upsert(request);
     }
 
+    @PostMapping("/knowledge/quick-entry")
+    @ResponseStatus(HttpStatus.CREATED)
+    public KnowledgeArticleRecord createQuickEntry(@Valid @RequestBody KnowledgeQuickEntryRequest request) {
+        return knowledgeArticleService.createQuickEntry(request);
+    }
+
     @GetMapping("/incidents/{incidentId}/ai-guidance")
     public AiGuidanceRecord getAiGuidance(@PathVariable long incidentId) {
         AiGuidanceRecord record = aiGuidanceService.build(incidentId);

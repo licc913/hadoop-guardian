@@ -34,37 +34,53 @@ public class KnowledgeSuggestionService {
         if (incident == null) {
             return Collections.emptyList();
         }
-
         String haystack = buildHaystack(incident).toLowerCase(Locale.ROOT);
+        return matchArticles(incident.getServiceType(), incident.getSeverity(), haystack, 5);
+    }
 
+    public List<KnowledgeSuggestionRecord> search(String domainHint, String question, int limit) {
+        String haystack = question == null ? "" : question.toLowerCase(Locale.ROOT);
+        String normalizedDomain = domainHint == null ? "" : domainHint.trim().toUpperCase(Locale.ROOT);
+        int safeLimit = limit <= 0 ? 3 : Math.min(limit, 8);
+        return matchArticles(normalizedDomain, "MEDIUM", haystack, safeLimit);
+    }
+
+    private List<KnowledgeSuggestionRecord> matchArticles(String serviceType,
+                                                          String severity,
+                                                          String haystack,
+                                                          int limit) {
         return knowledgeArticleRepository.findAll().stream()
-            .map(article -> score(article, incident, haystack))
+            .map(article -> score(article, serviceType, severity, haystack))
             .filter(candidate -> candidate.score > 0)
             .sorted(Comparator.comparingInt((MatchCandidate candidate) -> candidate.score).reversed()
                 .thenComparing(candidate -> candidate.article.getTitle()))
-            .limit(5)
+            .limit(limit)
             .map(MatchCandidate::toRecord)
             .collect(Collectors.toList());
     }
 
-    private MatchCandidate score(KnowledgeArticleEntity article, IncidentEntity incident, String haystack) {
+    private MatchCandidate score(KnowledgeArticleEntity article,
+                                 String serviceType,
+                                 String severity,
+                                 String haystack) {
         int score = 0;
         List<String> reasons = new ArrayList<String>();
         Set<String> matchedKeywords = new LinkedHashSet<String>();
 
-        if (article.getDomain().equalsIgnoreCase(incident.getServiceType())) {
+        String normalizedServiceType = safe(serviceType).toUpperCase(Locale.ROOT);
+        if (article.getDomain().equalsIgnoreCase(normalizedServiceType)) {
             score += 12;
-            reasons.add("知识条目所属领域与当前事件服务类型一致。");
-        } else if ("HIVE_ON_TEZ".equals(incident.getServiceType()) && "YARN".equals(article.getDomain())) {
+            reasons.add("知识条目领域与当前服务类型一致。");
+        } else if ("HIVE_ON_TEZ".equals(normalizedServiceType) && "YARN".equalsIgnoreCase(article.getDomain())) {
             score += 5;
-            reasons.add("Hive on Tez 事件通常需要联动检查 YARN 资源层。");
-        } else if ("CROSS_COMPONENT".equals(incident.getServiceType())) {
+            reasons.add("Hive on Tez 场景通常需要同时检查 YARN 资源层。");
+        } else if ("CROSS_COMPONENT".equals(normalizedServiceType)) {
             score += 3;
-            reasons.add("跨组件事件会联动匹配多个处置方案。");
+            reasons.add("跨组件问题需要联动匹配多个处置方案。");
         }
 
         for (String keyword : article.getMatchKeywords()) {
-            String normalizedKeyword = keyword.toLowerCase(Locale.ROOT);
+            String normalizedKeyword = safe(keyword).toLowerCase(Locale.ROOT);
             if (normalizedKeyword.length() >= 2 && haystack.contains(normalizedKeyword)) {
                 matchedKeywords.add(keyword);
             }
@@ -72,12 +88,12 @@ public class KnowledgeSuggestionService {
 
         if (!matchedKeywords.isEmpty()) {
             score += matchedKeywords.size() * 4;
-            reasons.add("命中关键信号：" + String.join("、", matchedKeywords));
+            reasons.add("命中关键词：" + String.join("、", matchedKeywords));
         }
 
-        if ("CRITICAL".equals(incident.getSeverity())) {
+        if ("CRITICAL".equalsIgnoreCase(severity)) {
             score += 1;
-            reasons.add("事件等级较高，优先返回更保守的处置方案。");
+            reasons.add("当前事件等级较高，优先返回更保守的处置方案。");
         }
 
         return new MatchCandidate(article, score, new ArrayList<String>(matchedKeywords), reasons);
@@ -96,13 +112,20 @@ public class KnowledgeSuggestionService {
             .collect(Collectors.joining(" | "));
     }
 
+    private String safe(String value) {
+        return value == null ? "" : value.trim();
+    }
+
     private static class MatchCandidate {
         private final KnowledgeArticleEntity article;
         private final int score;
         private final List<String> matchedKeywords;
         private final List<String> reasons;
 
-        private MatchCandidate(KnowledgeArticleEntity article, int score, List<String> matchedKeywords, List<String> reasons) {
+        private MatchCandidate(KnowledgeArticleEntity article,
+                               int score,
+                               List<String> matchedKeywords,
+                               List<String> reasons) {
             this.article = article;
             this.score = score;
             this.matchedKeywords = matchedKeywords;

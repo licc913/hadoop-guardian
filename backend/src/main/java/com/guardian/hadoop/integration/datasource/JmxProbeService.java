@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import org.springframework.http.HttpEntity;
@@ -67,7 +68,12 @@ public class JmxProbeService {
                 headers.setBasicAuth(endpoint.getUsername(), endpoint.getPassword(), StandardCharsets.UTF_8);
             }
 
-            ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.GET, new HttpEntity<String>(headers), String.class);
+            ResponseEntity<String> response = restTemplate.exchange(
+                url,
+                HttpMethod.GET,
+                new HttpEntity<String>(headers),
+                String.class
+            );
             JsonNode root = objectMapper.readTree(response.getBody());
             JsonNode beans = root.path("beans");
             if (!beans.isArray()) {
@@ -78,6 +84,7 @@ public class JmxProbeService {
 
             result.setBeanCount(beans.size());
             result.setSampleMetrics(extractSamples(beans, endpoint.getMetricWhitelist()));
+            result.setObservedMetrics(extractObservedMetrics(beans, endpoint.getMetricWhitelist()));
             result.setSuccess(true);
             result.setMessage("JMX 指标抓取成功。");
             return result;
@@ -117,6 +124,49 @@ public class JmxProbeService {
         return samples;
     }
 
+    private List<String> extractObservedMetrics(JsonNode beans, String whitelist) {
+        List<String> metrics = new ArrayList<String>();
+        List<String> tokens = splitWhitelist(whitelist);
+
+        for (JsonNode bean : beans) {
+            String beanName = bean.path("name").asText();
+            boolean beanMatched = tokens.isEmpty() || matchesAny(beanName, tokens);
+            Iterator<String> fieldNames = bean.fieldNames();
+
+            while (fieldNames.hasNext()) {
+                String fieldName = fieldNames.next();
+                if (skipField(fieldName)) {
+                    continue;
+                }
+
+                JsonNode value = bean.get(fieldName);
+                if (value == null || value.isNull() || value.isContainerNode()) {
+                    continue;
+                }
+
+                String metricKey = beanName + "." + fieldName;
+                if (!tokens.isEmpty() && !beanMatched && !matchesAny(metricKey, tokens) && !matchesAny(fieldName, tokens)) {
+                    continue;
+                }
+                if (!(value.isNumber() || value.isBoolean() || value.isTextual())) {
+                    continue;
+                }
+
+                String renderedValue = renderMetricValue(value);
+                if (!hasText(renderedValue)) {
+                    continue;
+                }
+
+                metrics.add(metricKey + "=" + renderedValue);
+                if (metrics.size() >= 8) {
+                    return metrics;
+                }
+            }
+        }
+
+        return metrics;
+    }
+
     private List<String> splitWhitelist(String whitelist) {
         List<String> values = new ArrayList<String>();
         if (!hasText(whitelist)) {
@@ -138,6 +188,34 @@ public class JmxProbeService {
             }
         }
         return false;
+    }
+
+    private boolean skipField(String fieldName) {
+        if (!hasText(fieldName)) {
+            return true;
+        }
+        String normalized = fieldName.toLowerCase(Locale.ROOT);
+        return "name".equals(normalized)
+            || "modelertype".equals(normalized)
+            || "objectname".equals(normalized)
+            || normalized.startsWith("tag");
+    }
+
+    private String renderMetricValue(JsonNode value) {
+        if (value == null || value.isNull()) {
+            return "";
+        }
+        if (value.isFloatingPointNumber()) {
+            return String.format(Locale.ROOT, "%.2f", value.asDouble());
+        }
+        if (value.isNumber() || value.isBoolean()) {
+            return value.asText();
+        }
+        String text = value.asText("");
+        if (!hasText(text)) {
+            return "";
+        }
+        return text.length() <= 96 ? text : text.substring(0, 96);
     }
 
     private String trimMessage(String value) {

@@ -4,6 +4,7 @@ import { getCurrentUser, logout } from "./lib/api";
 import type { CurrentUser } from "./lib/types";
 import { IncidentDetailPage } from "./pages/IncidentDetailPage";
 import { IncidentListPage } from "./pages/IncidentListPage";
+import { LlmConsolePage } from "./pages/LlmConsolePage";
 import { LoginPage } from "./pages/LoginPage";
 import { SettingsPage } from "./pages/SettingsPage";
 
@@ -45,8 +46,7 @@ export default function App() {
             <div className="brand-chip">数据平台运维台</div>
             <h1>Hadoop Guardian</h1>
             <p className="sidebar-copy">
-              面向 HDFS、YARN、Hive on Tez 与 Impala 的故障处置工作台。平台建立在 Cloudera Manager 之上，
-              聚焦事件研判、证据采集、影响评估与受控处置。
+              面向 HDFS、YARN、Hive on Tez 与 Impala 的故障处置工作台。平台建立在 Cloudera Manager 之上，聚焦事件研判、证据采集、影响评估与受控处置。
             </p>
           </div>
 
@@ -70,6 +70,14 @@ export default function App() {
             <span className="nav-body">
               <span className="nav-title">集成与采集配置</span>
               <span className="nav-copy">管理数据源接入、连通性校验与同步结果。</span>
+            </span>
+          </NavLink>
+
+          <NavLink className="nav-link" to="/llm-console">
+            <span className="nav-index">03</span>
+            <span className="nav-body">
+              <span className="nav-title">AI 对话工作台</span>
+              <span className="nav-copy">开启独立会话，连续追问 SQL、排障、脚本和工具开发问题。</span>
             </span>
           </NavLink>
         </nav>
@@ -108,6 +116,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<IncidentListPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/llm-console" element={<LlmConsolePage />} />
             <Route path="/incidents/:incidentId" element={<IncidentDetailPage />} />
           </Routes>
         </div>

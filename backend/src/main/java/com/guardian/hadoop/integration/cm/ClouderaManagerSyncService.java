@@ -35,7 +35,8 @@ public class ClouderaManagerSyncService {
     @Transactional
     public ClouderaManagerSyncResponse syncAlerts() {
         ClouderaManagerSettingsEntity settings = settingsService.getEffectiveSettings();
-        String endpoint = client.buildAlertsEndpoint(settings);
+        String apiVersion = client.resolveApiVersion(settings);
+        String endpoint = client.buildAlertsEndpoint(settings, apiVersion);
         Instant now = Instant.now();
 
         if (!settings.isEnabled()) {
@@ -52,7 +53,7 @@ public class ClouderaManagerSyncService {
         }
 
         try {
-            ApiAlertsResponse response = client.fetchAlerts(settings);
+            ApiAlertsResponse response = client.fetchAlerts(settings, apiVersion);
             List<ApiAlertItem> items = response.getItems() == null ? new ArrayList<ApiAlertItem>() : response.getItems();
             List<IncidentEntity> existingIncidents = incidentRepository.findAll();
             List<String> importedIncidents = new ArrayList<String>();
@@ -153,8 +154,8 @@ public class ClouderaManagerSyncService {
         return String.join("|",
             safe(incident.getClusterName()).toUpperCase(Locale.ROOT),
             safe(incident.getServiceType()).toUpperCase(Locale.ROOT),
-            safe(incident.getTitle()).replaceAll("\\s+", " ").replaceAll("[0-9]+(?:\\.[0-9]+)?", "#").toUpperCase(Locale.ROOT),
-            safe(incident.getSummary()).replaceAll("\\s+", " ").replaceAll("[0-9]+(?:\\.[0-9]+)?", "#").toUpperCase(Locale.ROOT)
+            normalizeAlertText(incident.getTitle()),
+            normalizeAlertText(incident.getSummary())
         );
     }
 
@@ -163,9 +164,19 @@ public class ClouderaManagerSyncService {
         return String.join("|",
             safe(settingsService.getEffectiveSettings().getClusterName()).toUpperCase(Locale.ROOT),
             serviceType.toUpperCase(Locale.ROOT),
-            buildTitle(item, serviceType).replaceAll("\\s+", " ").replaceAll("[0-9]+(?:\\.[0-9]+)?", "#").toUpperCase(Locale.ROOT),
-            buildSummary(item).replaceAll("\\s+", " ").replaceAll("[0-9]+(?:\\.[0-9]+)?", "#").toUpperCase(Locale.ROOT)
+            normalizeAlertText(buildTitle(item, serviceType)),
+            normalizeAlertText(buildSummary(item))
         );
+    }
+
+    private String normalizeAlertText(String value) {
+        return safe(value)
+            .replaceAll("\\s+", " ")
+            .replaceAll("[0-9]+(?:\\.[0-9]+)?", "#")
+            .replaceAll("[A-Fa-f0-9]{8,}(?:-[A-Fa-f0-9]{4,})*", "#")
+            .replaceAll("[A-Za-z_]+-[A-Za-z0-9]{8,}", "#")
+            .trim()
+            .toUpperCase(Locale.ROOT);
     }
 
     private String mapServiceType(ApiAlertItem item) {

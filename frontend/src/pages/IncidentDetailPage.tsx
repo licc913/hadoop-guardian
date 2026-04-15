@@ -43,39 +43,6 @@ const statusLabelMap: Record<string, string> = {
   CLOSED: "已关闭"
 };
 
-const riskLevelMap: Record<string, string> = {
-  LOW: "低",
-  MEDIUM: "中",
-  HIGH: "高",
-  CRITICAL: "严重"
-};
-
-const approvalStatusMap: Record<string, string> = {
-  PENDING: "待审批",
-  APPROVED: "已批准",
-  REJECTED: "已拒绝"
-};
-
-const executionStatusMap: Record<string, string> = {
-  SUCCESS: "成功",
-  FAILED: "失败",
-  RUNNING: "执行中",
-  PENDING: "待执行"
-};
-
-const actionStatusMap: Record<string, string> = {
-  PENDING: "待处理",
-  PENDING_APPROVAL: "待审批",
-  APPROVED: "已批准",
-  CLOSED: "已关闭"
-};
-
-const actionTypeMap: Record<string, string> = {
-  GUARDED_SCRIPT: "受控脚本",
-  DIAGNOSTIC_COLLECTION: "诊断采集",
-  EVIDENCE_COLLECTION: "证据采集"
-};
-
 const diagnosisModeOptions: Array<{ value: DiagnosisMode; label: string; description: string }> = [
   { value: "AUTO", label: "自动", description: "优先调用 AI 大模型，失败时回退到知识库或规则。" },
   { value: "LLM_ONLY", label: "仅 AI 大模型", description: "只接受 AI 输出，不回退到知识库或规则。" },
@@ -95,9 +62,7 @@ type DetailPayload = {
 };
 
 function formatTime(value?: string | null) {
-  if (!value) {
-    return "未记录";
-  }
+  if (!value) return "未记录";
   return new Date(value).toLocaleString("zh-CN", { hour12: false });
 }
 
@@ -105,43 +70,35 @@ function uniq(values: Array<string | null | undefined>) {
   return Array.from(new Set(values.filter((item): item is string => Boolean(item && item.trim()))));
 }
 
+function extractPersistedLogEvidence(incident: Incident | null) {
+  if (!incident) return [];
+  return uniq(
+    (incident.evidence ?? []).filter((item) => {
+      const upper = item.toUpperCase();
+      return upper.includes("WARN") || upper.includes("WARNING") || upper.includes("ERROR") || item.includes("日志");
+    })
+  );
+}
+
 function buildDiagnosisSignature(diagnosis: Diagnosis) {
-  return [
-    diagnosis.subsystem,
-    diagnosis.rootCause,
-    diagnosis.impactLevel,
-    diagnosis.crossComponentPath,
-    ...(diagnosis.recommendations ?? []),
-    "---",
-    ...(diagnosis.followUps ?? [])
-  ].join("|");
+  return [diagnosis.subsystem, diagnosis.rootCause, diagnosis.impactLevel, diagnosis.crossComponentPath, ...(diagnosis.recommendations ?? []), ...(diagnosis.followUps ?? [])].join("|");
 }
 
 function dedupeDiagnoses(items: Diagnosis[]) {
   const seen = new Set<string>();
   return items.filter((item) => {
     const signature = buildDiagnosisSignature(item);
-    if (seen.has(signature)) {
-      return false;
-    }
+    if (seen.has(signature)) return false;
     seen.add(signature);
     return true;
   });
 }
 
 function describeDiagnosisSource(source: string, usedFallback: boolean) {
-  if (source === "EXTERNAL_LLM") {
-    return "AI 大模型诊断";
-  }
-  if (source === "KNOWLEDGE_BASE") {
-    return "知识库诊断";
-  }
-  if (source === "RULE_FALLBACK") {
-    return usedFallback ? "规则回退诊断" : "规则诊断";
-  }
-  if (source === "NONE") {
-    return "未生成诊断结果";
-  }
+  if (source === "EXTERNAL_LLM") return "AI 大模型诊断";
+  if (source === "KNOWLEDGE_BASE") return "知识库诊断";
+  if (source === "RULE_FALLBACK") return usedFallback ? "规则回退诊断" : "规则诊断";
+  if (source === "NONE") return "未生成诊断结果";
   return "未知诊断来源";
 }
 
@@ -149,42 +106,34 @@ function describeRequestedMode(mode: DiagnosisMode) {
   return diagnosisModeOptions.find((item) => item.value === mode)?.label ?? mode;
 }
 
-function buildCurrentDiagnosis(result: DiagnosisTaskResponse, payload: DetailPayload) {
-  if (result.diagnosis) {
-    return result.diagnosis;
-  }
-  if (result.createdNewDiagnosis && payload.diagnoses.length > 0) {
-    return payload.diagnoses[0];
-  }
+function buildCurrentDiagnosis(result: DiagnosisTaskResponse, diagnoses: Diagnosis[]) {
+  if (result.diagnosis) return result.diagnosis;
+  if (result.createdNewDiagnosis && diagnoses.length > 0) return diagnoses[0];
   return null;
 }
 
 function buildKnowledgeSummary(knowledge: KnowledgeSuggestion[]) {
   const primary = knowledge[0];
-  if (!primary) {
-    return null;
-  }
-  return {
-    title: primary.title,
-    summary: primary.summary,
-    firstStep: primary.steps[0] ?? null,
-    reason: primary.matchReasons[0] ?? null
-  };
+  if (!primary) return null;
+  return { title: primary.title, summary: primary.summary, firstStep: primary.steps[0] ?? null, reason: primary.matchReasons[0] ?? null };
 }
 
 function matchesServiceStatus(incident: Incident, serviceStatus: CmServiceStatus | null) {
-  if (!serviceStatus) {
-    return false;
-  }
+  if (!serviceStatus) return false;
   const requested = incident.serviceType.toUpperCase();
   const current = serviceStatus.serviceType.toUpperCase();
-  if (requested === current) {
-    return true;
-  }
-  if (requested === "HIVE_ON_TEZ") {
-    return current.includes("HIVE") || current.includes("TEZ");
-  }
+  if (requested === current) return true;
+  if (requested === "HIVE_ON_TEZ") return current.includes("HIVE") || current.includes("TEZ");
   return false;
+}
+
+function isHealthyService(serviceStatus: CmServiceStatus | null) {
+  if (!serviceStatus) return false;
+  const health = (serviceStatus.healthSummary || "").toUpperCase();
+  const state = (serviceStatus.serviceState || serviceStatus.entityStatus || "").toUpperCase();
+  if (serviceStatus.unhealthyRoleCount > 0) return false;
+  if (health.includes("BAD") || health.includes("CONCERN") || health.includes("UNKNOWN")) return false;
+  return !(state.includes("STOPPED") || state.includes("BAD"));
 }
 
 export function IncidentDetailPage() {
@@ -200,7 +149,6 @@ export function IncidentDetailPage() {
   const [executions, setExecutions] = useState<ExecutionRecord[]>([]);
   const [postmortem, setPostmortem] = useState<PostmortemRecord | null>(null);
   const [serviceStatus, setServiceStatus] = useState<CmServiceStatus | null>(null);
-
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
   const [flashMessage, setFlashMessage] = useState<string | null>(null);
@@ -210,17 +158,16 @@ export function IncidentDetailPage() {
   const [showHistory, setShowHistory] = useState(false);
 
   async function loadIncidentDetail(): Promise<DetailPayload | null> {
-    const [incidentResult, diagnosisResult, actionResult, knowledgeResult, aiResult, approvalResult, executionResult, statusResult] =
-      await Promise.allSettled([
-        getIncident(parsedIncidentId),
-        getDiagnoses(parsedIncidentId),
-        getActionRecommendations(parsedIncidentId),
-        getKnowledgeSuggestions(parsedIncidentId),
-        getAiGuidance(parsedIncidentId),
-        getApprovalRecords(parsedIncidentId),
-        getExecutionRecords(parsedIncidentId),
-        getClouderaManagerCurrentStatus()
-      ]);
+    const [incidentResult, diagnosisResult, actionResult, knowledgeResult, aiResult, approvalResult, executionResult, statusResult] = await Promise.allSettled([
+      getIncident(parsedIncidentId),
+      getDiagnoses(parsedIncidentId),
+      getActionRecommendations(parsedIncidentId),
+      getKnowledgeSuggestions(parsedIncidentId),
+      getAiGuidance(parsedIncidentId),
+      getApprovalRecords(parsedIncidentId),
+      getExecutionRecords(parsedIncidentId),
+      getClouderaManagerCurrentStatus()
+    ]);
 
     if (incidentResult.status !== "fulfilled") {
       setIncident(null);
@@ -237,8 +184,7 @@ export function IncidentDetailPage() {
 
     let matchedServiceStatus: CmServiceStatus | null = null;
     if (statusResult.status === "fulfilled" && statusResult.value.success) {
-      matchedServiceStatus =
-        statusResult.value.services.find((item) => matchesServiceStatus(incidentResult.value, item)) ?? null;
+      matchedServiceStatus = statusResult.value.services.find((item) => matchesServiceStatus(incidentResult.value, item)) ?? null;
     }
 
     const payload: DetailPayload = {
@@ -271,46 +217,47 @@ export function IncidentDetailPage() {
   }, [parsedIncidentId]);
 
   const knowledgeSummary = useMemo(() => buildKnowledgeSummary(knowledge), [knowledge]);
-  const currentDiagnosis = currentResult && incident ? buildCurrentDiagnosis(currentResult, {
-    incident,
-    diagnoses,
-    actions,
-    knowledge,
-    aiGuidance,
-    approvals,
-    executions,
-    postmortem,
-    serviceStatus
-  }) : null;
-  const signalHighlights = uniq([...(aiGuidance?.signalHighlights ?? []), ...(aiGuidance?.evidenceHighlights ?? [])]).slice(0, 6);
+  const currentDiagnosis = useMemo(() => (currentResult ? buildCurrentDiagnosis(currentResult, diagnoses) : null), [currentResult, diagnoses]);
+  const signalHighlights: string[] = [];
   const jmxInsights = aiGuidance?.jmxInsights ?? [];
+  const persistedLogEvidence = useMemo(() => extractPersistedLogEvidence(incident), [incident]);
+  const realtimeEvidence = useMemo(
+    () => uniq([...(serviceStatus?.logHighlights ?? []), ...(serviceStatus?.roleHighlights ?? []), ...persistedLogEvidence, ...jmxInsights]),
+    [jmxInsights, persistedLogEvidence, serviceStatus]
+  );
+  const snapshotHighlights = useMemo(
+    () => uniq([...(serviceStatus?.logHighlights ?? []), ...(serviceStatus?.logPreviewLines ?? []), ...(serviceStatus?.roleHighlights ?? [])]).slice(0, 8),
+    [serviceStatus]
+  );
+  const diagnosisChecklist = useMemo(() => {
+    const items: string[] = [];
+    if (serviceStatus) {
+      items.push(isHealthyService(serviceStatus)
+        ? `当前 CM 实时快照显示 ${serviceStatus.serviceName || serviceStatus.serviceType} 暂未发现明显异常角色。`
+        : `当前 CM 实时快照显示 ${serviceStatus.serviceName || serviceStatus.serviceType} 仍处于异常或待关注状态。`);
+      items.push(...snapshotHighlights.slice(0, 6));
+    }
+    items.push(...persistedLogEvidence.slice(0, 6));
+    items.push(...jmxInsights.slice(0, 3));
+    return uniq(items).slice(0, 10);
+  }, [jmxInsights, persistedLogEvidence, serviceStatus]);
 
-  if (loadError) {
-    return <div className="panel empty-state">{loadError}</div>;
-  }
-
-  if (!incident) {
-    return <div className="panel">正在加载事件详情...</div>;
-  }
+  if (loadError) return <div className="panel empty-state">{loadError}</div>;
+  if (!incident) return <div className="panel">正在加载事件详情...</div>;
 
   async function handleCreateDiagnosisTask() {
     setIsSubmitting(true);
     setFlashMessage(null);
     try {
       const result = await createDiagnosisTask(parsedIncidentId, diagnosisMode);
-      const refreshed = await loadIncidentDetail();
+      await loadIncidentDetail();
       setCurrentResult(result);
       if (result.createdNewDiagnosis || result.diagnosisSource === "KNOWLEDGE_BASE") {
         setShowHistory(true);
       }
-
       const sourceText = `${describeDiagnosisSource(result.diagnosisSource, result.usedFallback)} / 模式：${describeRequestedMode(result.requestedMode)}`;
-      const details = result.details ? ` 详情：${result.details}` : "";
+      const details = result.details && result.details !== result.message ? ` 详情：${result.details}` : "";
       setFlashMessage(`${result.message} 来源：${sourceText}.${details}`);
-
-      if (refreshed && !result.createdNewDiagnosis && result.diagnosisSource === "NONE") {
-        setCurrentResult(result);
-      }
     } catch (error) {
       setCurrentResult(null);
       setFlashMessage(error instanceof Error ? `诊断任务执行失败：${error.message}` : "诊断任务执行失败，请检查后端日志和接口状态。");
@@ -364,15 +311,7 @@ export function IncidentDetailPage() {
           </section>
           <section className="subpanel">
             <h3>证据摘要</h3>
-            {incident.evidence.length === 0 ? (
-              <div className="empty-state">当前没有证据条目。</div>
-            ) : (
-              <ul className="list">
-                {incident.evidence.slice(0, 4).map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            )}
+            {incident.evidence.length === 0 ? <div className="empty-state">当前没有证据条目。</div> : <ul className="list">{incident.evidence.slice(0, 4).map((item) => <li key={item}>{item}</li>)}</ul>}
           </section>
         </div>
       </section>
@@ -382,12 +321,10 @@ export function IncidentDetailPage() {
           <div>
             <p className="eyebrow">诊断入口</p>
             <h3>启动诊断任务</h3>
-            <p className="muted">默认只展示事件上下文。成功诊断后会展示本次输出，历史记录可单独展开查看。</p>
+            <p className="muted">这里优先展示当前状态清单，历史诊断和处置结果继续折叠在下方。</p>
           </div>
           <div className="detail-actions">
-            <Link to="/incidents" className="button button-secondary">
-              返回事件列表
-            </Link>
+            <Link to="/incidents" className="button button-secondary">返回事件列表</Link>
             {incident.status !== "CLOSED" ? (
               <button className="button button-secondary" disabled={isClosing} type="button" onClick={() => void handleCloseIncident()}>
                 {isClosing ? "关闭中..." : "关闭事件"}
@@ -398,18 +335,8 @@ export function IncidentDetailPage() {
 
         <div className="diagnosis-mode-grid">
           {diagnosisModeOptions.map((option) => (
-            <label
-              key={option.value}
-              className={`diagnosis-mode-option ${diagnosisMode === option.value ? "diagnosis-mode-option-active" : ""}`}
-            >
-              <input
-                className="diagnosis-mode-input"
-                type="radio"
-                name="diagnosisMode"
-                value={option.value}
-                checked={diagnosisMode === option.value}
-                onChange={() => setDiagnosisMode(option.value)}
-              />
+            <label key={option.value} className={`diagnosis-mode-option ${diagnosisMode === option.value ? "diagnosis-mode-option-active" : ""}`}>
+              <input className="diagnosis-mode-input" type="radio" name="diagnosisMode" value={option.value} checked={diagnosisMode === option.value} onChange={() => setDiagnosisMode(option.value)} />
               <span className="diagnosis-mode-title">{option.label}</span>
               <span className="diagnosis-mode-copy">{option.description}</span>
             </label>
@@ -421,6 +348,20 @@ export function IncidentDetailPage() {
           <span>{`历史诊断：${diagnoses.length} 条`}</span>
           <span>{`知识命中：${knowledge.length} 条`}</span>
           <span>{`JMX 信号：${jmxInsights.length} 条`}</span>
+        </div>
+
+        <div className="subpanel">
+          <div className="panel-head">
+            <strong>实时诊断清单</strong>
+            <span>{serviceStatus ? "当前状态 + JMX" : "历史事件 + JMX"}</span>
+          </div>
+          {diagnosisChecklist.length === 0 ? (
+            <div className="empty-state">当前没有额外实时信号，建议先在设置页校验 CM 与 JMX，再发起诊断。</div>
+          ) : (
+            <ul className="list">
+              {diagnosisChecklist.map((item) => <li key={item}>{item}</li>)}
+            </ul>
+          )}
         </div>
 
         <div className="toolbar">
@@ -444,7 +385,6 @@ export function IncidentDetailPage() {
             </div>
             <span className="muted">{`模式：${describeRequestedMode(currentResult.requestedMode)}`}</span>
           </div>
-
           {currentDiagnosis ? (
             <div className="stack-md">
               <p className="lead">{currentDiagnosis.rootCause}</p>
@@ -453,13 +393,7 @@ export function IncidentDetailPage() {
                 <span>{`跨组件路径：${currentDiagnosis.crossComponentPath}`}</span>
                 <span>{`置信度：${Math.round(currentDiagnosis.confidence * 100)}%`}</span>
               </div>
-              {currentDiagnosis.recommendations.length > 0 ? (
-                <ul className="list">
-                  {currentDiagnosis.recommendations.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              ) : null}
+              {currentDiagnosis.recommendations.length > 0 ? <ul className="list">{currentDiagnosis.recommendations.map((item) => <li key={item}>{item}</li>)}</ul> : null}
             </div>
           ) : knowledgeSummary ? (
             <div className="stack-md">
@@ -475,14 +409,9 @@ export function IncidentDetailPage() {
 
       <div className="two-column-section">
         <section className="panel">
-          <div className="panel-head">
-            <div>
-              <p className="eyebrow">实时信号</p>
-              <h3>CM 当前状态快照</h3>
-            </div>
-          </div>
+          <div className="panel-head"><div><p className="eyebrow">当前状态</p><h3>CM 实时服务快照</h3></div></div>
           {!serviceStatus ? (
-            <div className="empty-state">当前没有匹配到该服务的实时 CM 状态，诊断仍可基于告警历史、知识库和 JMX 信号继续执行。</div>
+            <div className="empty-state">当前没有匹配到该服务的实时 CM 状态，诊断仍可基于历史事件、知识库和 JMX 信号继续执行。</div>
           ) : (
             <div className="stack-md">
               <div className="inline-metadata">
@@ -492,26 +421,13 @@ export function IncidentDetailPage() {
                 <span>{`角色数：${serviceStatus.roleCount}`}</span>
                 <span>{`异常角色：${serviceStatus.unhealthyRoleCount}`}</span>
               </div>
-              {serviceStatus.roleHighlights.length > 0 ? (
-                <ul className="list">
-                  {serviceStatus.roleHighlights.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              ) : (
-                <div className="empty-state">当前服务快照中没有额外异常角色摘要。</div>
-              )}
+              {serviceStatus.roleHighlights.length > 0 ? <ul className="list">{serviceStatus.roleHighlights.map((item) => <li key={item}>{item}</li>)}</ul> : <div className="empty-state">当前服务快照里没有额外异常角色摘要。</div>}
             </div>
           )}
         </section>
 
         <section className="panel">
-          <div className="panel-head">
-            <div>
-              <p className="eyebrow">实时采集</p>
-              <h3>JMX 与辅助信号</h3>
-            </div>
-          </div>
+          <div className="panel-head"><div><p className="eyebrow">实时采集</p><h3>JMX 与辅助信号</h3></div></div>
           {signalHighlights.length === 0 && jmxInsights.length === 0 ? (
             <div className="empty-state">当前没有聚合到额外实时信号，建议先在设置页完成 JMX 采集并重新发起诊断。</div>
           ) : (
@@ -519,21 +435,13 @@ export function IncidentDetailPage() {
               {signalHighlights.length > 0 ? (
                 <>
                   <strong>关键信号</strong>
-                  <ul className="list">
-                    {signalHighlights.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
+                  <ul className="list">{signalHighlights.map((item) => <li key={item}>{item}</li>)}</ul>
                 </>
               ) : null}
               {jmxInsights.length > 0 ? (
                 <>
                   <strong>JMX 摘要</strong>
-                  <ul className="list">
-                    {jmxInsights.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
+                  <ul className="list">{jmxInsights.map((item) => <li key={item}>{item}</li>)}</ul>
                 </>
               ) : null}
             </div>
@@ -544,158 +452,37 @@ export function IncidentDetailPage() {
       {showHistory ? (
         <>
           <section className="panel">
-            <div className="panel-head">
-              <div>
-                <p className="eyebrow">诊断记录</p>
-                <h3>诊断历史</h3>
-              </div>
-              <span className="muted">{`共 ${diagnoses.length} 条`}</span>
-            </div>
-            {diagnoses.length === 0 ? (
-              <div className="empty-state">当前还没有诊断记录。</div>
-            ) : (
-              <div className="stack-md">
-                {diagnoses.map((item) => (
-                  <DiagnosisCard key={item.id} diagnosis={item} />
-                ))}
-              </div>
-            )}
+            <div className="panel-head"><div><p className="eyebrow">诊断记录</p><h3>诊断历史</h3></div><span className="muted">{`共 ${diagnoses.length} 条`}</span></div>
+            {diagnoses.length === 0 ? <div className="empty-state">当前还没有诊断记录。</div> : <div className="stack-md">{diagnoses.map((item) => <DiagnosisCard key={item.id} diagnosis={item} />)}</div>}
           </section>
 
           <div className="two-column-section">
             <section className="panel">
-              <div className="panel-head">
-                <div>
-                  <p className="eyebrow">处置建议</p>
-                  <h3>动作建议</h3>
-                </div>
-                <span className="muted">{`共 ${actions.length} 条`}</span>
-              </div>
-              {actions.length === 0 ? (
-                <div className="empty-state">当前还没有动作建议。</div>
-              ) : (
-                <ul className="list">
-                  {actions.map((item) => (
-                    <li key={item.id}>
-                      <strong>{item.actionName}</strong>
-                      <div>{item.recommendationText}</div>
-                      <div className="inline-metadata">
-                        <span>{`类型：${actionTypeMap[item.actionType] ?? item.actionType}`}</span>
-                        <span>{`风险：${riskLevelMap[item.riskLevel] ?? item.riskLevel}`}</span>
-                        <span>{`状态：${actionStatusMap[item.status] ?? item.status}`}</span>
-                        <span>{`创建时间：${formatTime(item.createdAt)}`}</span>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <div className="panel-head"><div><p className="eyebrow">处置建议</p><h3>动作建议</h3></div><span className="muted">{`共 ${actions.length} 条`}</span></div>
+              {actions.length === 0 ? <div className="empty-state">当前还没有动作建议。</div> : <ul className="list">{actions.map((item) => <li key={item.id}><strong>{item.actionName}</strong><div>{item.recommendationText}</div><div className="inline-metadata"><span>{item.actionType}</span><span>{item.riskLevel}</span><span>{item.status}</span><span>{formatTime(item.createdAt)}</span></div></li>)}</ul>}
             </section>
 
             <section className="panel">
-              <div className="panel-head">
-                <div>
-                  <p className="eyebrow">知识命中</p>
-                  <h3>知识库建议</h3>
-                </div>
-                <span className="muted">{`共 ${knowledge.length} 条`}</span>
-              </div>
-              {knowledge.length === 0 ? (
-                <div className="empty-state">当前没有命中的知识库条目。</div>
-              ) : (
-                <ul className="list">
-                  {knowledge.map((item) => (
-                    <li key={item.id}>
-                      <strong>{item.title}</strong>
-                      <div>{item.summary}</div>
-                      <div className="inline-metadata">
-                        <span>{`领域：${serviceLabelMap[item.domain] ?? item.domain}`}</span>
-                        <span>{`风险：${riskLevelMap[item.riskLevel] ?? item.riskLevel}`}</span>
-                        <span>{`匹配分：${item.score}`}</span>
-                      </div>
-                      {item.matchReasons[0] ? <div className="muted">{item.matchReasons[0]}</div> : null}
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <div className="panel-head"><div><p className="eyebrow">知识命中</p><h3>知识库建议</h3></div><span className="muted">{`共 ${knowledge.length} 条`}</span></div>
+              {knowledge.length === 0 ? <div className="empty-state">当前没有命中的知识条目。</div> : <ul className="list">{knowledge.map((item) => <li key={item.id}><strong>{item.title}</strong><div>{item.summary}</div><div className="inline-metadata"><span>{serviceLabelMap[item.domain] ?? item.domain}</span><span>{item.riskLevel}</span><span>{`匹配分：${item.score}`}</span></div>{item.matchReasons[0] ? <div className="muted">{item.matchReasons[0]}</div> : null}</li>)}</ul>}
             </section>
           </div>
 
           <div className="two-column-section">
             <section className="panel">
-              <div className="panel-head">
-                <div>
-                  <p className="eyebrow">辅助判断</p>
-                  <h3>AI Guidance</h3>
-                </div>
-              </div>
-              {!aiGuidance ? (
-                <div className="empty-state">当前没有 AI Guidance 返回。</div>
-              ) : (
-                <div className="stack-md">
-                  <p>{aiGuidance.probableScenario}</p>
-                  <div className="inline-metadata">
-                    <span>{`置信度：${Math.round(aiGuidance.confidence * 100)}%`}</span>
-                    <span>{aiGuidance.confidenceLabel}</span>
-                    <span>{aiGuidance.confidenceMethod}</span>
-                  </div>
-                  {aiGuidance.recommendedOrder.length > 0 ? (
-                    <ul className="list">
-                      {aiGuidance.recommendedOrder.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </div>
-              )}
+              <div className="panel-head"><div><p className="eyebrow">辅助判断</p><h3>AI Guidance</h3></div></div>
+              {!aiGuidance ? <div className="empty-state">当前没有 AI Guidance 返回。</div> : <div className="stack-md"><p>{aiGuidance.probableScenario}</p><div className="inline-metadata"><span>{`置信度：${Math.round(aiGuidance.confidence * 100)}%`}</span><span>{aiGuidance.confidenceLabel}</span></div>{aiGuidance.recommendedOrder.length > 0 ? <ul className="list">{aiGuidance.recommendedOrder.map((item) => <li key={item}>{item}</li>)}</ul> : null}</div>}
             </section>
 
             <section className="panel">
-              <div className="panel-head">
-                <div>
-                  <p className="eyebrow">审批与执行</p>
-                  <h3>处置闭环</h3>
-                </div>
-              </div>
-
+              <div className="panel-head"><div><p className="eyebrow">审批与执行</p><h3>处置闭环</h3></div></div>
               <section className="subpanel">
                 <h4>审批记录</h4>
-                {approvals.length === 0 ? (
-                  <div className="empty-state">当前没有审批记录。</div>
-                ) : (
-                  <ul className="list">
-                    {approvals.map((item) => (
-                      <li key={item.id}>
-                        <strong>{approvalStatusMap[item.approvalStatus] ?? item.approvalStatus}</strong>
-                        <div className="inline-metadata">
-                          <span>{`申请人：${item.requestedBy}`}</span>
-                          <span>{`审批人：${item.approver || "未处理"}`}</span>
-                          <span>{`申请时间：${formatTime(item.requestedAt)}`}</span>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                {approvals.length === 0 ? <div className="empty-state">当前没有审批记录。</div> : <ul className="list">{approvals.map((item) => <li key={item.id}><strong>{item.approvalStatus}</strong><div className="inline-metadata"><span>{`申请人：${item.requestedBy}`}</span><span>{`审批人：${item.approver || "未处理"}`}</span><span>{`申请时间：${formatTime(item.requestedAt)}`}</span></div></li>)}</ul>}
               </section>
-
               <section className="subpanel">
                 <h4>执行记录</h4>
-                {executions.length === 0 ? (
-                  <div className="empty-state">当前没有执行记录。</div>
-                ) : (
-                  <ul className="list">
-                    {executions.map((item) => (
-                      <li key={item.id}>
-                        <strong>{executionStatusMap[item.executionStatus] ?? item.executionStatus}</strong>
-                        <div>{item.executionSummary}</div>
-                        <div className="inline-metadata">
-                          <span>{`执行人：${item.executor}`}</span>
-                          <span>{`开始时间：${formatTime(item.startedAt)}`}</span>
-                          <span>{`结束时间：${formatTime(item.finishedAt)}`}</span>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                {executions.length === 0 ? <div className="empty-state">当前没有执行记录。</div> : <ul className="list">{executions.map((item) => <li key={item.id}><strong>{item.executionStatus}</strong><div>{item.executionSummary}</div><div className="inline-metadata"><span>{`执行人：${item.executor}`}</span><span>{`开始时间：${formatTime(item.startedAt)}`}</span><span>{`结束时间：${formatTime(item.finishedAt)}`}</span></div></li>)}</ul>}
               </section>
             </section>
           </div>
@@ -703,54 +490,17 @@ export function IncidentDetailPage() {
           <div className="two-column-section">
             <section className="panel">
               <h3>完整证据</h3>
-              {incident.evidence.length === 0 ? (
-                <div className="empty-state">当前没有证据条目。</div>
-              ) : (
-                <ul className="list">
-                  {incident.evidence.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              )}
+              {incident.evidence.length === 0 ? <div className="empty-state">当前没有证据条目。</div> : <ul className="list">{incident.evidence.map((item) => <li key={item}>{item}</li>)}</ul>}
             </section>
-
             <section className="panel">
               <h3>避免动作</h3>
-              {incident.avoidedActions.length === 0 ? (
-                <div className="empty-state">当前没有禁止动作提示。</div>
-              ) : (
-                <ul className="list">
-                  {incident.avoidedActions.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              )}
+              {incident.avoidedActions.length === 0 ? <div className="empty-state">当前没有禁止动作提示。</div> : <ul className="list">{incident.avoidedActions.map((item) => <li key={item}>{item}</li>)}</ul>}
             </section>
           </div>
 
           <section className="panel">
-            <div className="panel-head">
-              <div>
-                <p className="eyebrow">复盘</p>
-                <h3>事后总结</h3>
-              </div>
-            </div>
-            {!postmortem ? (
-              <div className="empty-state">当前没有复盘记录。</div>
-            ) : (
-              <div className="stack-md">
-                <p>{postmortem.summary}</p>
-                <p>{postmortem.rootCause}</p>
-                <p>{postmortem.impactStatement}</p>
-                {postmortem.timeline.length > 0 ? (
-                  <ul className="list">
-                    {postmortem.timeline.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                ) : null}
-              </div>
-            )}
+            <div className="panel-head"><div><p className="eyebrow">复盘</p><h3>事后总结</h3></div></div>
+            {!postmortem ? <div className="empty-state">当前没有复盘记录。</div> : <div className="stack-md"><p>{postmortem.summary}</p><p>{postmortem.rootCause}</p><p>{postmortem.impactStatement}</p>{postmortem.timeline.length > 0 ? <ul className="list">{postmortem.timeline.map((item) => <li key={item}>{item}</li>)}</ul> : null}</div>}
           </section>
         </>
       ) : null}

@@ -18,7 +18,9 @@ import type {
   JmxProbeResponse,
   KnowledgeArticle,
   KnowledgeArticleRequest,
+  KnowledgeQuickEntryRequest,
   KnowledgeSuggestion,
+  LlmChatMessage,
   LlmPromptResponse,
   PostmortemRecord,
   SystemStatus
@@ -48,10 +50,25 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   return fetch(`${API_BASE}${path}`, { ...init, headers });
 }
 
+async function apiFetchWithTimeout(path: string, timeoutMs: number, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await apiFetch(path, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(`接口请求超时，超过 ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 async function readJson<T>(path: string): Promise<T> {
   const response = await apiFetch(path);
   if (!response.ok) {
-    throw new Error(`API failed: ${response.status}`);
+    throw new Error(await buildApiError(response));
   }
   return (await response.json()) as T;
 }
@@ -63,9 +80,25 @@ async function writeJson<T>(path: string, method: string, payload?: unknown): Pr
     body: payload === undefined ? undefined : JSON.stringify(payload)
   });
   if (!response.ok) {
-    throw new Error(`API failed: ${response.status}`);
+    throw new Error(await buildApiError(response));
   }
   return (await response.json()) as T;
+}
+
+async function buildApiError(response: Response): Promise<string> {
+  const fallback = `API failed: ${response.status}`;
+  try {
+    const contentType = response.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      const body = await response.json() as { message?: string; details?: string; error?: string };
+      const details = [body.message, body.details, body.error].filter(Boolean).join(" | ");
+      return details ? `${fallback} | ${details}` : fallback;
+    }
+    const text = (await response.text()).trim();
+    return text ? `${fallback} | ${text}` : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 export function getDashboardSummary(): Promise<DashboardSummary> {
@@ -135,7 +168,19 @@ export function syncClouderaManagerAlerts(): Promise<ClouderaManagerSyncResponse
 }
 
 export function getClouderaManagerCurrentStatus(): Promise<CmCurrentStatusResponse> {
-  return writeJson("/integrations/cloudera-manager/current-status", "POST");
+  return writeJsonWithTimeout("/integrations/cloudera-manager/current-status", "POST", 90000);
+}
+
+async function writeJsonWithTimeout<T>(path: string, method: string, timeoutMs: number, payload?: unknown): Promise<T> {
+  const response = await apiFetchWithTimeout(path, timeoutMs, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: payload === undefined ? undefined : JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    throw new Error(await buildApiError(response));
+  }
+  return (await response.json()) as T;
 }
 
 export function getClouderaManagerSettings(): Promise<ClouderaManagerSettings> {
@@ -166,8 +211,8 @@ export function testLlmConnection(): Promise<IntegrationTestResponse> {
   return writeJson("/integrations/datasources/llm/test", "POST");
 }
 
-export function askLlmQuestion(question: string): Promise<LlmPromptResponse> {
-  return writeJson("/integrations/datasources/llm/chat", "POST", { question });
+export function askLlmQuestion(question: string, history: LlmChatMessage[] = []): Promise<LlmPromptResponse> {
+  return writeJson("/integrations/datasources/llm/chat", "POST", { question, history });
 }
 
 export function testDiagnosticScripts(): Promise<IntegrationTestResponse> {
@@ -182,6 +227,10 @@ export function saveKnowledgeArticle(payload: KnowledgeArticleRequest): Promise<
   return writeJson("/knowledge/articles", "POST", payload);
 }
 
+export function saveKnowledgeQuickEntry(payload: KnowledgeQuickEntryRequest): Promise<KnowledgeArticle> {
+  return writeJson("/knowledge/quick-entry", "POST", payload);
+}
+
 export async function login(username: string, password: string): Promise<CurrentUser> {
   const response = await fetch(`${API_BASE}/auth/login`, {
     method: "POST",
@@ -189,7 +238,7 @@ export async function login(username: string, password: string): Promise<Current
     body: JSON.stringify({ username, password })
   });
   if (!response.ok) {
-    throw new Error(`API failed: ${response.status}`);
+    throw new Error(await buildApiError(response));
   }
   const currentUser = (await response.json()) as CurrentUser;
   setAuthToken(currentUser.token);
@@ -199,7 +248,7 @@ export async function login(username: string, password: string): Promise<Current
 export async function getCurrentUser(): Promise<CurrentUser> {
   const response = await apiFetch("/auth/me");
   if (!response.ok) {
-    throw new Error(`API failed: ${response.status}`);
+    throw new Error(await buildApiError(response));
   }
   return (await response.json()) as CurrentUser;
 }

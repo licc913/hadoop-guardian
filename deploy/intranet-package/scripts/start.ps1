@@ -56,10 +56,29 @@ $process = Start-Process -FilePath $javaExe `
     -PassThru
 
 $process.Id | Set-Content -Path $pidFile -Encoding ASCII
-Start-Sleep -Seconds 12
 
-$listeningPid = Get-ListeningPid $GuardianServerPort
+$listeningPid = $null
+for ($attempt = 0; $attempt -lt 24; $attempt++) {
+    Start-Sleep -Seconds 5
+    $listeningPid = Get-ListeningPid $GuardianServerPort
+    if ($listeningPid) {
+        break
+    }
+
+    $runningProcess = Get-Process -Id $process.Id -ErrorAction SilentlyContinue
+    if (-not $runningProcess) {
+        break
+    }
+}
+
 if (-not $listeningPid) {
+    $stderrTail = ""
+    if (Test-Path $stderr) {
+        $stderrTail = (Get-Content -Path $stderr -Tail 20 -ErrorAction SilentlyContinue) -join [Environment]::NewLine
+    }
+    if ($stderrTail) {
+        throw "Backend did not bind to port $GuardianServerPort. Recent stderr:`n$stderrTail"
+    }
     throw "Backend did not bind to port $GuardianServerPort. Check logs."
 }
 

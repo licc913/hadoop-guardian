@@ -83,7 +83,7 @@ public class GuardianDataService {
     }
 
     public List<IncidentRecord> getIncidents() {
-        return getDistinctActiveIncidents().stream()
+        return getDistinctActiveRealtimeIncidents().stream()
             .sorted((left, right) -> compareInstant(right.getOccurredAt(), left.getOccurredAt()))
             .map(IncidentRecord::fromEntity)
             .collect(Collectors.toList());
@@ -271,7 +271,7 @@ public class GuardianDataService {
     }
 
     public DashboardSummary getSummary() {
-        List<IncidentEntity> incidents = getDistinctActiveIncidents();
+        List<IncidentEntity> incidents = getDistinctActiveRealtimeIncidents();
         long openIncidents = incidents.stream().filter(incident -> "OPEN".equalsIgnoreCase(incident.getStatus())).count();
         long diagnosingIncidents = incidents.stream().filter(incident -> "DIAGNOSING".equalsIgnoreCase(incident.getStatus())).count();
         long criticalIncidents = incidents.stream().filter(incident -> "CRITICAL".equalsIgnoreCase(incident.getSeverity())).count();
@@ -283,7 +283,12 @@ public class GuardianDataService {
 
     public SystemStatusResponse getSystemStatus() {
         String databaseMode = datasourceUrl.contains("postgresql") ? "PostgreSQL" : "H2";
-        return new SystemStatusResponse(true, settingsService.getSettings().isConfigured(), databaseMode, getDistinctActiveIncidents().size());
+        return new SystemStatusResponse(
+            true,
+            settingsService.getEffectiveSettings().isEnabled(),
+            databaseMode,
+            getDistinctActiveRealtimeIncidents().size()
+        );
     }
 
     public void seedIfEmpty() {
@@ -292,6 +297,13 @@ public class GuardianDataService {
 
     private List<IncidentEntity> getDistinctActiveIncidents() {
         return getDistinctIncidents().stream()
+            .filter(incident -> !"CLOSED".equalsIgnoreCase(incident.getStatus()))
+            .collect(Collectors.toList());
+    }
+
+    private List<IncidentEntity> getDistinctActiveRealtimeIncidents() {
+        return getDistinctIncidents().stream()
+            .filter(incident -> "CM_CURRENT".equalsIgnoreCase(incident.getSourceType()))
             .filter(incident -> !"CLOSED".equalsIgnoreCase(incident.getStatus()))
             .collect(Collectors.toList());
     }
@@ -312,8 +324,8 @@ public class GuardianDataService {
             return String.join("|",
                 safe(incident.getClusterName()).toUpperCase(Locale.ROOT),
                 safe(incident.getServiceType()).toUpperCase(Locale.ROOT),
-                safe(incident.getTitle()).replaceAll("\\s+", " ").replaceAll("[0-9]+(?:\\.[0-9]+)?", "#").toUpperCase(Locale.ROOT),
-                safe(incident.getSummary()).replaceAll("\\s+", " ").replaceAll("[0-9]+(?:\\.[0-9]+)?", "#").toUpperCase(Locale.ROOT)
+                normalizeAlertText(incident.getTitle()),
+                normalizeAlertText(incident.getSummary())
             );
         }
         if (hasText(incident.getIncidentNo())) {
@@ -324,6 +336,16 @@ public class GuardianDataService {
             safe(incident.getServiceType()).toUpperCase(Locale.ROOT),
             safe(incident.getTitle()).toUpperCase(Locale.ROOT),
             safe(incident.getOccurredAt() == null ? null : incident.getOccurredAt().toString()));
+    }
+
+    private String normalizeAlertText(String value) {
+        return safe(value)
+            .replaceAll("\\s+", " ")
+            .replaceAll("[0-9]+(?:\\.[0-9]+)?", "#")
+            .replaceAll("[A-Fa-f0-9]{8,}(?:-[A-Fa-f0-9]{4,})*", "#")
+            .replaceAll("[A-Za-z_]+-[A-Za-z0-9]{8,}", "#")
+            .trim()
+            .toUpperCase(Locale.ROOT);
     }
 
     private DiagnosisBlueprintSelection buildDiagnosisBlueprint(IncidentEntity incident,

@@ -6,7 +6,11 @@ frontend/dist/
 .vscode/
 *.log
 *.tmp
+tmp_*.html
 ~$*
 logs/
 BOOT-INF/
 deploy/release/
+docs/tech-share-slidev/dist/
+docs/tech-share-slidev/node_modules/
+docs/tech-share-slidev/*.log

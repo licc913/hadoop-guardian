@@ -59,7 +59,7 @@ public class DataSourceConfigController {
 
     @PostMapping("/llm/chat")
     public LlmPromptResponse chatWithLlm(@RequestBody LlmPromptRequest request) {
-        return llmPromptService.ask(request.getQuestion());
+        return llmPromptService.ask(request);
     }
 
     @PostMapping("/scripts/test")
