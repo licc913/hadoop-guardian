@@ -65,4 +65,4 @@ guardian:
     connect-timeout-ms: ${GUARDIAN_LLM_CONNECT_TIMEOUT_MS:10000}
     read-timeout-ms: ${GUARDIAN_LLM_READ_TIMEOUT_MS:30000}
     temperature: ${GUARDIAN_LLM_TEMPERATURE:0.2}
-    max-tokens: ${GUARDIAN_LLM_MAX_TOKENS:900}
+    max-tokens: ${GUARDIAN_LLM_MAX_TOKENS:2048}

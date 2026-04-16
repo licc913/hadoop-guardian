@@ -34,7 +34,7 @@ type ToggleFieldProps = {
 const emptyConfig: DataSourceConfig = {
   clouderaManager: { enabled: false, baseUrl: "", apiVersion: "v51", username: "", password: "", passwordConfigured: false, clusterName: "", configured: false },
   logSource: { enabled: false, providerType: "ELASTICSEARCH", baseUrl: "", authType: "BASIC", authToken: "", authTokenConfigured: false, indexPattern: "hadoop-*", defaultTimeWindowMinutes: 30 },
-  llm: { enabled: false, endpoint: "", apiKey: "", apiKeyConfigured: false, model: "", connectTimeoutMs: 10000, readTimeoutMs: 30000, temperature: 0.2, maxTokens: 900, configured: false },
+  llm: { enabled: false, endpoint: "", apiKey: "", apiKeyConfigured: false, model: "", connectTimeoutMs: 10000, readTimeoutMs: 30000, temperature: 0.2, maxTokens: 2048, configured: false },
   jmxEndpoints: [],
   diagnosticScripts: []
 };

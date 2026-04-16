@@ -68,9 +68,7 @@ public class LlmDiagnosisService {
             payload.put("model", settings.getModel().trim());
             payload.put("stream", Boolean.FALSE);
             payload.put("temperature", settings.getTemperature());
-            if (settings.getMaxTokens() > 0) {
-                payload.put("max_tokens", settings.getMaxTokens());
-            }
+            payload.put("max_tokens", effectiveMaxTokens(settings));
             payload.put("messages", buildMessages(prompt));
 
             @SuppressWarnings("unchecked")
@@ -83,14 +81,20 @@ public class LlmDiagnosisService {
             String content = extractContent(response);
             if (!hasText(content)) {
                 return LlmDiagnosisResult.failure(
-                    "AI returned no diagnosis content.",
-                    summarizeResponse(response)
+                    "AI model responded but did not return a final diagnosis body.",
+                    summarizeMissingContentResponse(response)
                 );
             }
 
             try {
                 return LlmDiagnosisResult.success(parseBlueprint(content, incident.getServiceType()));
             } catch (IOException parseException) {
+                if (looksLikeReasoningOnly(content)) {
+                    return LlmDiagnosisResult.failure(
+                        "AI model returned reasoning text but no final diagnosis JSON.",
+                        "Increase max output tokens, or use a non-reasoning chat model for the diagnosis task."
+                    );
+                }
                 logger.warn("Failed to parse LLM diagnosis JSON, falling back to plain text blueprint", parseException);
                 return LlmDiagnosisResult.success(buildPlainTextBlueprint(content, incident.getServiceType()));
             }
@@ -210,21 +214,53 @@ public class LlmDiagnosisService {
         if (!(messageObject instanceof Map)) {
             return null;
         }
-        Object contentObject = ((Map<?, ?>) messageObject).get("content");
-        if (contentObject instanceof String) {
-            return (String) contentObject;
+        Map<?, ?> message = (Map<?, ?>) messageObject;
+        String content = extractTextValue(message.get("content"));
+        if (hasText(content)) {
+            return content;
         }
-        if (contentObject instanceof List) {
+
+        // Some OpenAI-compatible DeepSeek/Qwen gateways return the useful text
+        // in reasoning_content when max_tokens is too small or reasoning mode is enabled.
+        content = extractTextValue(message.get("reasoning_content"));
+        if (hasText(content)) {
+            return content;
+        }
+        content = extractTextValue(message.get("reasoning"));
+        if (hasText(content)) {
+            return content;
+        }
+        return extractTextValue(message.get("text"));
+    }
+
+    private String extractTextValue(Object value) {
+        if (value instanceof String) {
+            return (String) value;
+        }
+        if (value instanceof List) {
             StringBuilder builder = new StringBuilder();
-            for (Object item : (List<?>) contentObject) {
-                if (item instanceof Map) {
-                    Object text = ((Map<?, ?>) item).get("text");
-                    if (text instanceof String) {
-                        builder.append((String) text);
+            for (Object item : (List<?>) value) {
+                String text = extractTextValue(item);
+                if (hasText(text)) {
+                    if (builder.length() > 0) {
+                        builder.append('\n');
                     }
+                    builder.append(text.trim());
                 }
             }
             return builder.toString();
+        }
+        if (value instanceof Map) {
+            Map<?, ?> map = (Map<?, ?>) value;
+            String text = extractTextValue(map.get("text"));
+            if (hasText(text)) {
+                return text;
+            }
+            text = extractTextValue(map.get("content"));
+            if (hasText(text)) {
+                return text;
+            }
+            return extractTextValue(map.get("output_text"));
         }
         return null;
     }
@@ -335,6 +371,41 @@ public class LlmDiagnosisService {
         }
     }
 
+    private String summarizeMissingContentResponse(Map<String, Object> response) {
+        if (response == null || response.isEmpty()) {
+            return "Empty response body.";
+        }
+        Object choicesObject = response.get("choices");
+        if (!(choicesObject instanceof List) || ((List<?>) choicesObject).isEmpty()) {
+            return "Response does not contain choices[].";
+        }
+        Object firstChoice = ((List<?>) choicesObject).get(0);
+        if (!(firstChoice instanceof Map)) {
+            return "Response choices[0] is not an object.";
+        }
+        Object messageObject = ((Map<?, ?>) firstChoice).get("message");
+        if (!(messageObject instanceof Map)) {
+            return "Response choices[0].message is missing.";
+        }
+        Map<?, ?> message = (Map<?, ?>) messageObject;
+        boolean hasReasoning = hasText(extractTextValue(message.get("reasoning_content")))
+            || hasText(extractTextValue(message.get("reasoning")));
+        if (hasReasoning) {
+            return "Response contains reasoning_content but choices[0].message.content is empty. "
+                + "Increase max output tokens or use a non-reasoning chat model for diagnosis JSON.";
+        }
+        return "Response choices[0].message.content is empty.";
+    }
+
+    private boolean looksLikeReasoningOnly(String content) {
+        String normalized = safe(content).toLowerCase();
+        return (normalized.contains("json") && normalized.contains("rootcause") && normalized.contains("用户"))
+            || normalized.contains("reasoning_content")
+            || normalized.contains("用户要求")
+            || normalized.contains("必须包含以下字段")
+            || normalized.contains("事件上下文");
+    }
+
     private String buildHttpErrorDetails(RestClientResponseException exception) {
         return "HTTP "
             + exception.getRawStatusCode()
@@ -410,6 +481,11 @@ public class LlmDiagnosisService {
             return Math.max(configured, 180000);
         }
         return Math.max(configured, 120000);
+    }
+
+    private int effectiveMaxTokens(DiagnosisLlmSettingsEntity settings) {
+        int configured = settings == null ? 0 : settings.getMaxTokens();
+        return Math.max(configured, 2048);
     }
 
     private double clamp(double value, double min, double max) {

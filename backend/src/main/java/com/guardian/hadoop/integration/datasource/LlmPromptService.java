@@ -201,21 +201,50 @@ public class LlmPromptService {
         if (!(messageObject instanceof Map)) {
             return null;
         }
-        Object contentObject = ((Map<?, ?>) messageObject).get("content");
-        if (contentObject instanceof String) {
-            return (String) contentObject;
+        Map<?, ?> message = (Map<?, ?>) messageObject;
+        String content = extractTextValue(message.get("content"));
+        if (hasText(content)) {
+            return content;
         }
-        if (contentObject instanceof List) {
+        content = extractTextValue(message.get("reasoning_content"));
+        if (hasText(content)) {
+            return content;
+        }
+        content = extractTextValue(message.get("reasoning"));
+        if (hasText(content)) {
+            return content;
+        }
+        return extractTextValue(message.get("text"));
+    }
+
+    private String extractTextValue(Object value) {
+        if (value instanceof String) {
+            return (String) value;
+        }
+        if (value instanceof List) {
             StringBuilder builder = new StringBuilder();
-            for (Object item : (List<?>) contentObject) {
-                if (item instanceof Map) {
-                    Object text = ((Map<?, ?>) item).get("text");
-                    if (text instanceof String) {
-                        builder.append((String) text);
+            for (Object item : (List<?>) value) {
+                String text = extractTextValue(item);
+                if (hasText(text)) {
+                    if (builder.length() > 0) {
+                        builder.append('\n');
                     }
+                    builder.append(text.trim());
                 }
             }
             return builder.toString();
+        }
+        if (value instanceof Map) {
+            Map<?, ?> map = (Map<?, ?>) value;
+            String text = extractTextValue(map.get("text"));
+            if (hasText(text)) {
+                return text;
+            }
+            text = extractTextValue(map.get("content"));
+            if (hasText(text)) {
+                return text;
+            }
+            return extractTextValue(map.get("output_text"));
         }
         return null;
     }
