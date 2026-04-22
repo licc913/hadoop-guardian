@@ -1,0 +1,2 @@
+third_party/linux-postgresql/*.tar.gz filter=lfs diff=lfs merge=lfs -text
+deploy/release/*.tar.gz filter=lfs diff=lfs merge=lfs -text
