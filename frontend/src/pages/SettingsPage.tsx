@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import {
+  getClouderaManagerCurrentLogs,
   getClouderaManagerCurrentStatus,
   getDataSourceConfig,
   getKnowledgeArticles,
@@ -15,6 +16,7 @@ import {
 import type {
   ClouderaManagerSyncResponse,
   CmCurrentStatusResponse,
+  CmServiceLogSnapshot,
   DataSourceConfig,
   DiagnosticScript,
   IntegrationTestResponse,
@@ -34,7 +36,7 @@ type ToggleFieldProps = {
 const emptyConfig: DataSourceConfig = {
   clouderaManager: { enabled: false, baseUrl: "", apiVersion: "v51", username: "", password: "", passwordConfigured: false, clusterName: "", configured: false },
   logSource: { enabled: false, providerType: "ELASTICSEARCH", baseUrl: "", authType: "BASIC", authToken: "", authTokenConfigured: false, indexPattern: "hadoop-*", defaultTimeWindowMinutes: 30 },
-  llm: { enabled: false, endpoint: "", apiKey: "", apiKeyConfigured: false, model: "", connectTimeoutMs: 10000, readTimeoutMs: 30000, temperature: 0.2, maxTokens: 2048, configured: false },
+  llm: { enabled: false, endpoint: "", apiKey: "", apiKeyConfigured: false, model: "", connectTimeoutMs: 10000, readTimeoutMs: 30000, temperature: 0.2, maxTokens: 0, configured: false },
   jmxEndpoints: [],
   diagnosticScripts: []
 };
@@ -137,6 +139,7 @@ export function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [cmResult, setCmResult] = useState<ClouderaManagerSyncResponse | null>(null);
   const [cmCurrentResult, setCmCurrentResult] = useState<CmCurrentStatusResponse | null>(null);
+  const [currentLogs, setCurrentLogs] = useState<CmServiceLogSnapshot[]>([]);
   const [logResult, setLogResult] = useState<IntegrationTestResponse | null>(null);
   const [llmResult, setLlmResult] = useState<IntegrationTestResponse | null>(null);
   const [jmxResult, setJmxResult] = useState<JmxProbeResponse | null>(null);
@@ -156,9 +159,14 @@ export function SettingsPage() {
   useEffect(() => {
     async function load() {
       try {
-        const [configData, knowledgeData] = await Promise.all([getDataSourceConfig(), getKnowledgeArticles()]);
+        const [configData, knowledgeData, currentLogData] = await Promise.all([
+          getDataSourceConfig(),
+          getKnowledgeArticles(),
+          getClouderaManagerCurrentLogs().catch(() => [])
+        ]);
         setConfig(configData);
         setKnowledgeArticles(knowledgeData);
+        setCurrentLogs(currentLogData);
         setError(null);
       } catch {
         setError("加载配置失败，请确认后端服务已经启动。");
@@ -176,6 +184,10 @@ export function SettingsPage() {
 
   async function reloadKnowledgeArticles() {
     setKnowledgeArticles(await getKnowledgeArticles());
+  }
+
+  async function reloadCurrentLogs() {
+    setCurrentLogs(await getClouderaManagerCurrentLogs().catch(() => []));
   }
 
   async function persistConfig(nextConfig?: DataSourceConfig) {
@@ -237,6 +249,7 @@ export function SettingsPage() {
     try {
       const result = await getClouderaManagerCurrentStatus();
       setCmCurrentResult(result);
+      await reloadCurrentLogs();
       setMessage(result.message);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "CM 当前状态采集失败。");
@@ -326,6 +339,8 @@ export function SettingsPage() {
 
   if (loading) return <div className="panel">正在加载集成配置...</div>;
 
+  const persistedLogs = cmCurrentResult?.recentLogs?.length ? cmCurrentResult.recentLogs : currentLogs;
+
   return (
     <div className="stack-xl">
       <section className="hero hero-grid panel">
@@ -356,6 +371,10 @@ export function SettingsPage() {
         </div>
         {cmResult ? <div className={`subpanel result-panel ${cmResult.success ? "result-success" : "result-failure"}`}><div className="panel-head"><strong>CM 历史告警同步结果</strong><span>{cmResult.success ? "成功" : "失败"}</span></div><p className="compact-lead">{cmResult.message}</p><div className="inline-metadata"><span>{`时间：${formatDateTime(cmResult.validatedAt)}`}</span><span>{`拉取：${cmResult.fetchedCount}`}</span><span>{`导入：${cmResult.importedCount}`}</span><span>{`跳过：${cmResult.skippedCount}`}</span></div>{cmResult.details ? <pre className="result-details">{cmResult.details}</pre> : null}</div> : null}
         {cmCurrentResult ? <div className={`subpanel result-panel ${cmCurrentResult.success ? "result-success" : "result-failure"}`}><div className="panel-head"><strong>CM 当前状态快照</strong><span>{cmCurrentResult.success ? "成功" : "失败"}</span></div><p className="compact-lead">{cmCurrentResult.message}</p><div className="inline-metadata"><span>{`时间：${formatDateTime(cmCurrentResult.collectedAt)}`}</span><span>{`服务数：${cmCurrentResult.serviceCount}`}</span><span>{`异常服务：${cmCurrentResult.unhealthyServiceCount}`}</span></div>{cmCurrentResult.details ? <pre className="result-details">{cmCurrentResult.details}</pre> : null}<div className="stack-md">{cmCurrentResult.services.slice(0, 6).map((service) => <div key={`${service.serviceName}-${service.serviceType}`} className="subpanel"><div className="inline-metadata"><span>{service.serviceName || service.serviceType}</span><span>{`健康：${service.healthSummary || "未返回"}`}</span><span>{`状态：${service.serviceState || service.entityStatus || "未返回"}`}</span><span>{`异常角色：${service.unhealthyRoleCount}/${service.roleCount}`}</span></div>{service.roleHighlights.length > 0 ? <div className="stack-xs"><strong>角色状态摘要</strong><ul className="list">{service.roleHighlights.map((item) => <li key={item}>{item}</li>)}</ul></div> : null}{service.logHighlights.length > 0 ? <div className="stack-xs"><strong>诊断用日志摘要（WARN / ERROR）</strong><ul className="list">{service.logHighlights.map((item) => <li key={item}>{item}</li>)}</ul></div> : null}{service.logPreviewLines.length > 0 ? <div className="stack-xs"><strong>服务日志预览</strong><ul className="list">{service.logPreviewLines.map((item) => <li key={item}>{item}</li>)}</ul></div> : null}</div>)}</div></div> : null}
+        <div className="subpanel">
+          <div className="panel-head"><strong>数据库中的服务日志快照</strong><span>{persistedLogs.length}</span></div>
+          {persistedLogs.length === 0 ? <div className="empty-state">当前数据库里还没有可展示的服务日志快照，请先采集 CM 当前状态或等待后台定时采集。</div> : <ul className="list">{persistedLogs.slice(0, 10).map((item, index) => <li key={`${item.serviceType}-${item.collectedAt}-${index}`}><strong>{item.serviceName || item.serviceType}</strong><div>{item.logText}</div><div className="inline-metadata"><span>{item.serviceType}</span><span>{item.logType}</span><span>{formatDateTime(item.collectedAt)}</span></div></li>)}</ul>}
+        </div>
       </section>
 
       <section className="panel">
@@ -368,7 +387,7 @@ export function SettingsPage() {
           <label><span>连接超时（毫秒）</span><input type="number" value={config.llm.connectTimeoutMs} onChange={(event) => updateLlm("connectTimeoutMs", Number(event.target.value))} /></label>
           <label><span>读取超时（毫秒）</span><input type="number" value={config.llm.readTimeoutMs} onChange={(event) => updateLlm("readTimeoutMs", Number(event.target.value))} /></label>
           <label><span>温度</span><input type="number" min="0" max="2" step="0.1" value={config.llm.temperature} onChange={(event) => updateLlm("temperature", Number(event.target.value))} /></label>
-          <label><span>最大输出 Token</span><input type="number" value={config.llm.maxTokens} onChange={(event) => updateLlm("maxTokens", Number(event.target.value))} /></label>
+          <label><span>最大输出 Token（0 表示不限制）</span><input type="number" value={config.llm.maxTokens} onChange={(event) => updateLlm("maxTokens", Number(event.target.value))} /></label>
         </div>
         <div className="detail-actions"><button className="primary-button" disabled={saving || testingLlm} onClick={() => void handleSaveAndTestLlm()} type="button">{testingLlm ? "测试中..." : "保存并测试大模型连接"}</button><Link className="secondary-button" to="/llm-console">打开 AI 对话工作台</Link></div>
         {renderIntegrationResult("大模型连接测试结果", llmResult)}

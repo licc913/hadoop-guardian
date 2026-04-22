@@ -1,6 +1,7 @@
 package com.guardian.hadoop.integration.cm;
 
 import javax.validation.Valid;
+import java.util.List;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -14,11 +15,14 @@ public class ClouderaManagerSettingsController {
 
     private final ClouderaManagerSettingsService settingsService;
     private final ClouderaManagerCurrentStatusService currentStatusService;
+    private final CmServiceLogSnapshotService logSnapshotService;
 
     public ClouderaManagerSettingsController(ClouderaManagerSettingsService settingsService,
-                                             ClouderaManagerCurrentStatusService currentStatusService) {
+                                             ClouderaManagerCurrentStatusService currentStatusService,
+                                             CmServiceLogSnapshotService logSnapshotService) {
         this.settingsService = settingsService;
         this.currentStatusService = currentStatusService;
+        this.logSnapshotService = logSnapshotService;
     }
 
     @GetMapping("/settings")
@@ -34,5 +38,10 @@ public class ClouderaManagerSettingsController {
     @PostMapping("/current-status")
     public CmCurrentStatusResponse getCurrentStatus() {
         return currentStatusService.fetchCurrentStatus();
+    }
+
+    @GetMapping("/current-logs")
+    public List<CmServiceLogSnapshotRecord> getCurrentLogs() {
+        return logSnapshotService.getLatestLogs();
     }
 }

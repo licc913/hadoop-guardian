@@ -11,6 +11,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClientException;
@@ -18,24 +20,29 @@ import org.springframework.web.client.RestClientException;
 @Service
 public class ClouderaManagerCurrentStatusService {
 
+    private static final Logger log = LoggerFactory.getLogger(ClouderaManagerCurrentStatusService.class);
+
     private static final int MAX_ROLE_HIGHLIGHTS = 6;
     private static final int MAX_LOG_HIGHLIGHTS = 6;
     private static final int MAX_LOG_PREVIEWS = 3;
-    private static final int MAX_PREVIEW_SERVICES = 4;
-    private static final int MAX_ROLE_LOG_ATTEMPTS_PER_SERVICE = 4;
+    private static final int MAX_PREVIEW_SERVICES = 2;
+    private static final int MAX_ROLE_LOG_ATTEMPTS_PER_SERVICE = 2;
     private static final int LOG_CONTEXT_RADIUS = 3;
     private static final int LOG_LINE_MAX_LENGTH = 240;
 
     private final ClouderaManagerClient client;
     private final ClouderaManagerSettingsService settingsService;
     private final IncidentRepository incidentRepository;
+    private final CmServiceLogSnapshotService logSnapshotService;
 
     public ClouderaManagerCurrentStatusService(ClouderaManagerClient client,
                                                ClouderaManagerSettingsService settingsService,
-                                               IncidentRepository incidentRepository) {
+                                               IncidentRepository incidentRepository,
+                                               CmServiceLogSnapshotService logSnapshotService) {
         this.client = client;
         this.settingsService = settingsService;
         this.incidentRepository = incidentRepository;
+        this.logSnapshotService = logSnapshotService;
     }
 
     public CmCurrentStatusResponse fetchCurrentStatus() {
@@ -55,7 +62,8 @@ public class ClouderaManagerCurrentStatusService {
                 now,
                 0,
                 0,
-                Collections.<CmServiceStatusRecord>emptyList()
+                Collections.<CmServiceStatusRecord>emptyList(),
+                logSnapshotService.getLatestLogs()
             );
         }
 
@@ -69,13 +77,15 @@ public class ClouderaManagerCurrentStatusService {
                 now,
                 0,
                 0,
-                Collections.<CmServiceStatusRecord>emptyList()
+                Collections.<CmServiceStatusRecord>emptyList(),
+                logSnapshotService.getLatestLogs()
             );
         }
 
         try {
             JsonNode response = client.fetchCurrentServices(settings, apiVersion);
-            List<CmServiceStatusRecord> services = buildServiceStatuses(settings, apiVersion, response);
+            ServiceBuildResult buildResult = buildServiceStatuses(settings, apiVersion, response);
+            List<CmServiceStatusRecord> services = buildResult.services;
             Collections.sort(
                 services,
                 Comparator
@@ -87,12 +97,26 @@ public class ClouderaManagerCurrentStatusService {
 
             int unhealthyCount = countUnhealthyServices(services);
             persistCurrentIncidents(settings, endpoint, services);
+            logSnapshotService.appendSnapshots(
+                defaultIfBlank(settings.getClusterName(), resolvedCluster),
+                services,
+                now
+            );
 
             String message = unhealthyCount == 0
                 ? "当前服务快照采集成功，未发现明显异常服务。"
                 : "当前服务快照采集成功，已发现异常服务并更新诊断队列。";
             String details = "共采集 " + services.size() + " 个服务，其中 "
                 + unhealthyCount + " 个服务存在健康风险或角色日志异常。";
+
+            if (!buildResult.collectionWarnings.isEmpty()) {
+                StringBuilder detailBuilder = new StringBuilder(details);
+                detailBuilder.append("\n瑙掕壊/鏃ュ織閲囬泦璀﹀憡:");
+                for (String warning : buildResult.collectionWarnings) {
+                    detailBuilder.append("\n- ").append(warning);
+                }
+                details = detailBuilder.toString();
+            }
 
             return new CmCurrentStatusResponse(
                 true,
@@ -103,7 +127,8 @@ public class ClouderaManagerCurrentStatusService {
                 Instant.now(),
                 services.size(),
                 unhealthyCount,
-                services
+                services,
+                logSnapshotService.getLatestLogs()
             );
         } catch (HttpStatusCodeException exception) {
             return new CmCurrentStatusResponse(
@@ -116,7 +141,8 @@ public class ClouderaManagerCurrentStatusService {
                 now,
                 0,
                 0,
-                Collections.<CmServiceStatusRecord>emptyList()
+                Collections.<CmServiceStatusRecord>emptyList(),
+                logSnapshotService.getLatestLogs()
             );
         } catch (RestClientException exception) {
             return new CmCurrentStatusResponse(
@@ -128,7 +154,8 @@ public class ClouderaManagerCurrentStatusService {
                 now,
                 0,
                 0,
-                Collections.<CmServiceStatusRecord>emptyList()
+                Collections.<CmServiceStatusRecord>emptyList(),
+                logSnapshotService.getLatestLogs()
             );
         } catch (Exception exception) {
             return new CmCurrentStatusResponse(
@@ -140,7 +167,8 @@ public class ClouderaManagerCurrentStatusService {
                 now,
                 0,
                 0,
-                Collections.<CmServiceStatusRecord>emptyList()
+                Collections.<CmServiceStatusRecord>emptyList(),
+                logSnapshotService.getLatestLogs()
             );
         }
     }
@@ -161,13 +189,14 @@ public class ClouderaManagerCurrentStatusService {
         return null;
     }
 
-    private List<CmServiceStatusRecord> buildServiceStatuses(ClouderaManagerSettingsEntity settings,
-                                                             String apiVersion,
-                                                             JsonNode response) {
+    private ServiceBuildResult buildServiceStatuses(ClouderaManagerSettingsEntity settings,
+                                                    String apiVersion,
+                                                    JsonNode response) {
         List<ServiceCandidate> candidates = new ArrayList<ServiceCandidate>();
+        List<String> collectionWarnings = new ArrayList<String>();
         JsonNode items = response == null ? null : response.get("items");
         if (items == null || !items.isArray()) {
-            return Collections.emptyList();
+            return new ServiceBuildResult(Collections.<CmServiceStatusRecord>emptyList(), collectionWarnings);
         }
 
         for (JsonNode service : items) {
@@ -182,7 +211,12 @@ public class ClouderaManagerCurrentStatusService {
                 if (!isBlank(serviceName)) {
                     roleResponse = client.fetchServiceRoles(settings, serviceName, apiVersion);
                 }
-            } catch (Exception ignored) {
+            } catch (Exception exception) {
+                String warning = "鏈嶅姟 " + defaultIfBlank(serviceName, "UNKNOWN_SERVICE")
+                    + " 瑙掕壊鍒楄〃璇诲彇澶辫触: "
+                    + defaultIfBlank(exception.getMessage(), exception.getClass().getSimpleName());
+                collectionWarnings.add(warning);
+                log.warn("Failed to fetch CM roles for service {}", serviceName, exception);
                 roleResponse = null;
             }
 
@@ -208,7 +242,7 @@ public class ClouderaManagerCurrentStatusService {
                 : candidate.baseSnapshot;
             services.add(candidate.toRecord(snapshot));
         }
-        return services;
+        return new ServiceBuildResult(services, collectionWarnings);
     }
 
     private RoleSnapshot summarizeRoles(ClouderaManagerSettingsEntity settings,
@@ -228,6 +262,7 @@ public class ClouderaManagerCurrentStatusService {
 
             String roleName = text(role, "name");
             String roleType = text(role, "type");
+            String hostName = text(role.get("hostRef"), "hostname");
             String healthSummary = firstText(role, "healthSummary", "healthStatus");
             String roleState = firstText(role, "roleState", "commissionState");
 
@@ -237,19 +272,12 @@ public class ClouderaManagerCurrentStatusService {
                 && logAttempts < MAX_ROLE_LOG_ATTEMPTS_PER_SERVICE;
             boolean collectHighlight = healthAbnormal && snapshot.logHighlights.size() < MAX_LOG_HIGHLIGHTS;
             RoleLogEvidence evidence = (collectHighlight || collectPreview)
-                ? fetchRoleLogEvidence(settings, apiVersion, serviceName, roleName, roleType)
+                ? fetchRoleLogEvidence(settings, apiVersion, serviceName, roleName, roleType, hostName)
                 : RoleLogEvidence.empty();
             if (collectHighlight || collectPreview) {
                 logAttempts++;
             }
             boolean hasLogHighlight = !isBlank(evidence.highlight);
-
-            if (!isBlank(evidence.error) && collectPreview && snapshot.logPreviewLines.isEmpty()) {
-                snapshot.addPreview(evidence.error);
-            }
-            if (!isBlank(evidence.error) && collectHighlight) {
-                snapshot.addLogHighlight(evidence.error);
-            }
 
             if (!healthAbnormal && !hasLogHighlight) {
                 if (!isBlank(evidence.preview)) {
@@ -259,7 +287,7 @@ public class ClouderaManagerCurrentStatusService {
             }
 
             snapshot.alertRoleCount++;
-            snapshot.addRoleHighlight(composeRoleHighlight(roleName, roleType, healthSummary, roleState));
+            snapshot.addRoleHighlight(composeRoleHighlight(roleName, roleType, hostName, healthSummary, roleState));
             if (!isBlank(evidence.highlight)) {
                 snapshot.addLogHighlight(evidence.highlight);
             }
@@ -275,7 +303,8 @@ public class ClouderaManagerCurrentStatusService {
                                                  String apiVersion,
                                                  String serviceName,
                                                  String roleName,
-                                                 String roleType) {
+                                                 String roleType,
+                                                 String hostName) {
         try {
             String logText = client.fetchRoleFullLog(settings, serviceName, roleName, apiVersion);
             if (isBlank(logText)) {
@@ -294,7 +323,7 @@ public class ClouderaManagerCurrentStatusService {
                 return RoleLogEvidence.empty();
             }
 
-            String preview = composeLogPreview(roleType, roleName, lines.get(lines.size() - 1));
+            String preview = composeLogPreview(roleType, roleName, hostName, lines.get(lines.size() - 1));
             for (int index = lines.size() - 1; index >= 0; index--) {
                 String line = lines.get(index);
                 String upper = line.toUpperCase(Locale.ROOT);
@@ -307,14 +336,21 @@ public class ClouderaManagerCurrentStatusService {
                 for (int lineIndex = start; lineIndex <= end; lineIndex++) {
                     context.add(lines.get(lineIndex));
                 }
-                return new RoleLogEvidence(composeLogHighlight(roleType, roleName, context), preview, null);
+                return new RoleLogEvidence(composeLogHighlight(roleType, roleName, hostName, context), preview, null);
             }
             return new RoleLogEvidence(null, preview, null);
         } catch (HttpStatusCodeException exception) {
+            log.warn(
+                "Failed to fetch CM role log for service={}, role={} with status {} {}",
+                serviceName,
+                roleName,
+                exception.getRawStatusCode(),
+                exception.getStatusText()
+            );
             return new RoleLogEvidence(
                 null,
                 null,
-                defaultIfBlank(roleType, defaultIfBlank(roleName, "ROLE"))
+                roleLabel(roleType, roleName, hostName)
                     + " 日志读取失败: HTTP "
                     + exception.getRawStatusCode()
                     + " "
@@ -325,6 +361,7 @@ public class ClouderaManagerCurrentStatusService {
             if (message.length() > 120) {
                 message = message.substring(0, 120);
             }
+            log.warn("Failed to fetch CM role log for service={}, role={}: {}", serviceName, roleName, message, exception);
             return new RoleLogEvidence(
                 null,
                 null,
@@ -370,32 +407,11 @@ public class ClouderaManagerCurrentStatusService {
     }
 
     private String resolveIncidentSummary(IncidentEntity incident, CmServiceStatusRecord service) {
-        String currentSummary = buildCurrentIncidentSummary(service);
-        if (service.getLogHighlights().isEmpty() && service.getLogPreviewLines().isEmpty()) {
-            String preserved = findPreservedLogLine(incident.getSummary(), incident.getEvidence());
-            if (!isBlank(preserved)) {
-                return preserved;
-            }
-        }
-        return currentSummary;
+        return buildCurrentIncidentSummary(service);
     }
 
     private List<String> mergeIncidentEvidence(IncidentEntity incident, String endpoint, CmServiceStatusRecord service) {
-        List<String> currentEvidence = buildCurrentEvidence(endpoint, service);
-        if (!service.getLogHighlights().isEmpty() || !service.getLogPreviewLines().isEmpty()) {
-            return currentEvidence;
-        }
-
-        List<String> merged = new ArrayList<String>(currentEvidence);
-        for (String preserved : incident.getEvidence()) {
-            if (!looksLikeLogEvidence(preserved)) {
-                continue;
-            }
-            if (!merged.contains(preserved)) {
-                merged.add(preserved);
-            }
-        }
-        return merged;
+        return buildCurrentEvidence(endpoint, service);
     }
 
     private String buildCurrentIncidentSourceId(ClouderaManagerSettingsEntity settings, CmServiceStatusRecord service) {
@@ -504,13 +520,20 @@ public class ClouderaManagerCurrentStatusService {
             || state.contains("BAD");
     }
 
-    private String composeRoleHighlight(String roleName, String roleType, String healthSummary, String roleState) {
+    private String composeRoleHighlight(String roleName,
+                                        String roleType,
+                                        String hostName,
+                                        String healthSummary,
+                                        String roleState) {
         List<String> parts = new ArrayList<String>();
         if (!isBlank(roleType)) {
             parts.add(roleType);
         }
         if (!isBlank(roleName)) {
             parts.add(roleName);
+        }
+        if (!isBlank(hostName)) {
+            parts.add("host=" + hostName);
         }
         if (!isBlank(healthSummary)) {
             parts.add("健康=" + healthSummary);
@@ -521,13 +544,13 @@ public class ClouderaManagerCurrentStatusService {
         return parts.isEmpty() ? "存在异常角色。" : join(parts, " | ");
     }
 
-    private String composeLogPreview(String roleType, String roleName, String line) {
-        String roleLabel = defaultIfBlank(roleType, defaultIfBlank(roleName, "ROLE"));
+    private String composeLogPreview(String roleType, String roleName, String hostName, String line) {
+        String roleLabel = roleLabel(roleType, roleName, hostName);
         return roleLabel + " 日志预览: " + truncate(line, LOG_LINE_MAX_LENGTH);
     }
 
-    private String composeLogHighlight(String roleType, String roleName, List<String> contextLines) {
-        String roleLabel = defaultIfBlank(roleType, defaultIfBlank(roleName, "ROLE"));
+    private String composeLogHighlight(String roleType, String roleName, String hostName, List<String> contextLines) {
+        String roleLabel = roleLabel(roleType, roleName, hostName);
         StringBuilder builder = new StringBuilder();
         builder.append(roleLabel).append(" WARN/ERROR: ");
         for (int index = 0; index < contextLines.size(); index++) {
@@ -535,6 +558,17 @@ public class ClouderaManagerCurrentStatusService {
                 builder.append(" || ");
             }
             builder.append(truncate(contextLines.get(index), LOG_LINE_MAX_LENGTH));
+        }
+        return builder.toString();
+    }
+
+    private String roleLabel(String roleType, String roleName, String hostName) {
+        StringBuilder builder = new StringBuilder(defaultIfBlank(roleType, defaultIfBlank(roleName, "ROLE")));
+        if (!isBlank(roleName) && !safe(roleName).equalsIgnoreCase(safe(roleType))) {
+            builder.append(" ").append(roleName);
+        }
+        if (!isBlank(hostName)) {
+            builder.append(" @").append(hostName);
         }
         return builder.toString();
     }
@@ -642,6 +676,16 @@ public class ClouderaManagerCurrentStatusService {
 
     private String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    private static final class ServiceBuildResult {
+        private final List<CmServiceStatusRecord> services;
+        private final List<String> collectionWarnings;
+
+        private ServiceBuildResult(List<CmServiceStatusRecord> services, List<String> collectionWarnings) {
+            this.services = services == null ? Collections.<CmServiceStatusRecord>emptyList() : services;
+            this.collectionWarnings = collectionWarnings == null ? Collections.<String>emptyList() : collectionWarnings;
+        }
     }
 
     private static final class RoleSnapshot {

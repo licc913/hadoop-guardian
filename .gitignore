@@ -14,3 +14,5 @@ deploy/release/
 docs/tech-share-slidev/dist/
 docs/tech-share-slidev/node_modules/
 docs/tech-share-slidev/*.log
+frontend/*.tsbuildinfo
+third_party/linux-postgresql/

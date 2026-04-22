@@ -61,8 +61,9 @@ public class LlmPromptService {
             payload.put("model", settings.getModel().trim());
             payload.put("stream", Boolean.FALSE);
             payload.put("temperature", settings.getTemperature());
-            if (settings.getMaxTokens() > 0) {
-                payload.put("max_tokens", settings.getMaxTokens());
+            int maxTokens = effectiveMaxTokens(settings);
+            if (maxTokens > 0) {
+                payload.put("max_tokens", maxTokens);
             }
             payload.put("messages", buildMessages(request, knowledgeSuggestionService.search("", safeQuestion, 3)));
 
@@ -127,7 +128,7 @@ public class LlmPromptService {
                 + "第二，SQL 设计、改写与优化，熟悉 Impala SQL、Hive SQL、Spark SQL、执行计划分析、资源队列与元数据问题；"
                 + "第三，脚本与工具开发，能够输出 Python、Java、Shell、SQL、配置片段和自动化诊断工具；"
                 + "第四，方案设计与评审，能够给出排查策略、修复方案、风险边界、回滚点和长期治理建议。"
-                + "请始终使用中文回答，并默认按 Markdown 风格组织内容。"
+                + "无论用户使用什么语言提问，你都必须始终使用简体中文回答，并默认按 Markdown 风格组织内容。"
                 + "输出时优先采用以下结构：先给结论，再给关键依据，然后给可执行步骤；如适合，补充 SQL、脚本、命令、配置示例；最后补充风险、回滚和治理建议。"
                 + "如果问题本质是诊断类问题，请主动区分已确认事实、推测、缺失证据，并给出下一步最小可执行动作。"
                 + "如果问题本质是 SQL 或开发问题，请直接给高质量可执行版本，而不是只讲概念。"
@@ -267,6 +268,17 @@ public class LlmPromptService {
             return Math.max(configured, 120000);
         }
         return Math.max(configured, 60000);
+    }
+
+    private int effectiveMaxTokens(DiagnosisLlmSettingsEntity settings) {
+        int configured = settings == null ? 0 : settings.getMaxTokens();
+        if (configured <= 0) {
+            return 0;
+        }
+        if (configured == 2048) {
+            return 0;
+        }
+        return configured;
     }
 
     private boolean isPromptDisclosureAttempt(String question) {

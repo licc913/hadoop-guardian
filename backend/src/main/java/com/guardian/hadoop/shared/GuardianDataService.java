@@ -16,6 +16,8 @@ import com.guardian.hadoop.incident.IncidentCloseResponse;
 import com.guardian.hadoop.incident.IncidentEntity;
 import com.guardian.hadoop.incident.IncidentRecord;
 import com.guardian.hadoop.incident.IncidentRepository;
+import com.guardian.hadoop.integration.cm.CmServiceLogSnapshotRecord;
+import com.guardian.hadoop.integration.cm.CmServiceLogSnapshotService;
 import com.guardian.hadoop.integration.cm.ClouderaManagerSettingsService;
 import com.guardian.hadoop.knowledge.KnowledgeSuggestionRecord;
 import com.guardian.hadoop.knowledge.KnowledgeSuggestionService;
@@ -54,6 +56,7 @@ public class GuardianDataService {
     private final ExecutionRecordRepository executionRecordRepository;
     private final PostmortemRecordRepository postmortemRecordRepository;
     private final ClouderaManagerSettingsService settingsService;
+    private final CmServiceLogSnapshotService logSnapshotService;
     private final KnowledgeSuggestionService knowledgeSuggestionService;
     private final LlmDiagnosisService llmDiagnosisService;
     private final String datasourceUrl;
@@ -66,6 +69,7 @@ public class GuardianDataService {
                                ExecutionRecordRepository executionRecordRepository,
                                PostmortemRecordRepository postmortemRecordRepository,
                                ClouderaManagerSettingsService settingsService,
+                               CmServiceLogSnapshotService logSnapshotService,
                                KnowledgeSuggestionService knowledgeSuggestionService,
                                LlmDiagnosisService llmDiagnosisService,
                                @Value("${spring.datasource.url}") String datasourceUrl) {
@@ -77,6 +81,7 @@ public class GuardianDataService {
         this.executionRecordRepository = executionRecordRepository;
         this.postmortemRecordRepository = postmortemRecordRepository;
         this.settingsService = settingsService;
+        this.logSnapshotService = logSnapshotService;
         this.knowledgeSuggestionService = knowledgeSuggestionService;
         this.llmDiagnosisService = llmDiagnosisService;
         this.datasourceUrl = datasourceUrl;
@@ -122,6 +127,14 @@ public class GuardianDataService {
         return postmortemRecordRepository.findByIncident_Id(incidentId)
             .map(PostmortemRecord::fromEntity)
             .orElse(null);
+    }
+
+    public List<CmServiceLogSnapshotRecord> getIncidentServiceLogs(long incidentId) {
+        IncidentEntity incident = incidentRepository.findById(incidentId).orElse(null);
+        if (incident == null) {
+            return Collections.emptyList();
+        }
+        return logSnapshotService.getLogsForIncident(incident);
     }
 
     @Transactional

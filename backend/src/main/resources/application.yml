@@ -65,4 +65,8 @@ guardian:
     connect-timeout-ms: ${GUARDIAN_LLM_CONNECT_TIMEOUT_MS:10000}
     read-timeout-ms: ${GUARDIAN_LLM_READ_TIMEOUT_MS:30000}
     temperature: ${GUARDIAN_LLM_TEMPERATURE:0.2}
-    max-tokens: ${GUARDIAN_LLM_MAX_TOKENS:2048}
+    max-tokens: ${GUARDIAN_LLM_MAX_TOKENS:0}
+  cm-log:
+    collection-initial-delay-ms: ${GUARDIAN_CM_LOG_COLLECTION_INITIAL_DELAY_MS:10000}
+    collection-fixed-delay-ms: ${GUARDIAN_CM_LOG_COLLECTION_FIXED_DELAY_MS:60000}
+    retention-hours: ${GUARDIAN_CM_LOG_RETENTION_HOURS:24}

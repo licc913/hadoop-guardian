@@ -3,6 +3,8 @@ package com.guardian.hadoop.diagnosis;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.guardian.hadoop.incident.IncidentEntity;
+import com.guardian.hadoop.integration.cm.CmServiceLogSnapshotRecord;
+import com.guardian.hadoop.integration.cm.CmServiceLogSnapshotService;
 import com.guardian.hadoop.integration.llm.DiagnosisLlmSettingsEntity;
 import com.guardian.hadoop.integration.llm.DiagnosisLlmSettingsService;
 import com.guardian.hadoop.knowledge.KnowledgeSuggestionRecord;
@@ -33,13 +35,16 @@ public class LlmDiagnosisService {
     private final DiagnosisLlmSettingsService settingsService;
     private final ObjectMapper objectMapper;
     private final KnowledgeSuggestionService knowledgeSuggestionService;
+    private final CmServiceLogSnapshotService logSnapshotService;
 
     public LlmDiagnosisService(DiagnosisLlmSettingsService settingsService,
                                ObjectMapper objectMapper,
-                               KnowledgeSuggestionService knowledgeSuggestionService) {
+                               KnowledgeSuggestionService knowledgeSuggestionService,
+                               CmServiceLogSnapshotService logSnapshotService) {
         this.settingsService = settingsService;
         this.objectMapper = objectMapper;
         this.knowledgeSuggestionService = knowledgeSuggestionService;
+        this.logSnapshotService = logSnapshotService;
     }
 
     public LlmDiagnosisResult generate(IncidentEntity incident, String triggerReason, String triggerBy) {
@@ -57,7 +62,8 @@ public class LlmDiagnosisService {
             safe(incident.getTitle()) + "\n" + safe(incident.getSummary()) + "\n" + String.join("\n", incident.getEvidence()),
             3
         );
-        String prompt = buildIncidentPrompt(incident, triggerReason, triggerBy, knowledgeSuggestions);
+        List<CmServiceLogSnapshotRecord> serviceLogs = logSnapshotService.getLogsForIncident(incident);
+        String prompt = buildIncidentPrompt(incident, triggerReason, triggerBy, knowledgeSuggestions, serviceLogs);
 
         try {
             HttpHeaders headers = new HttpHeaders();
@@ -68,7 +74,10 @@ public class LlmDiagnosisService {
             payload.put("model", settings.getModel().trim());
             payload.put("stream", Boolean.FALSE);
             payload.put("temperature", settings.getTemperature());
-            payload.put("max_tokens", effectiveMaxTokens(settings));
+            int maxTokens = effectiveMaxTokens(settings);
+            if (maxTokens > 0) {
+                payload.put("max_tokens", maxTokens);
+            }
             payload.put("messages", buildMessages(prompt));
 
             @SuppressWarnings("unchecked")
@@ -128,13 +137,12 @@ public class LlmDiagnosisService {
         List<Map<String, String> > messages = new ArrayList<Map<String, String> >();
         messages.add(message(
             "system",
-            "You are a senior CDP and Hadoop platform diagnosis expert. "
-                + "You specialize in Cloudera Manager, role logs, JMX, HDFS, YARN, Hive, Impala, Spark, Kafka, HBase, Ranger, and ZooKeeper. "
-                + "You must return a single JSON object only. "
-                + "Do not output markdown, explanations, or code fences. "
-                + "Required fields: rootCause, confidence, impactLevel, crossComponentPath, recommendations, followUps, "
-                + "actionName, actionType, actionRiskLevel, actionRequiresApproval, actionRecommendationText. "
-                + "Use current evidence first. Do not treat historical incidents as current facts."
+            "你是一名资深 CDP 与 Hadoop 平台诊断专家，擅长 Cloudera Manager、角色日志、JMX、HDFS、YARN、Hive、Impala、Spark、Kafka、HBase、Ranger 与 ZooKeeper 的故障诊断。"
+                + "你必须只返回一个 JSON 对象，不要输出 Markdown、解释说明或代码块。"
+                + "JSON 字段名必须固定为：rootCause, confidence, impactLevel, crossComponentPath, recommendations, followUps, "
+                + "actionName, actionType, actionRiskLevel, actionRequiresApproval, actionRecommendationText。"
+                + "除字段名外，所有自然语言字段值必须使用简体中文，禁止输出英文结论、英文建议或中英混杂表述。"
+                + "诊断时必须优先使用当前证据，不得把历史事件当作当前事实。"
         ));
         messages.add(message("user", prompt));
         return messages;
@@ -150,9 +158,10 @@ public class LlmDiagnosisService {
     private String buildIncidentPrompt(IncidentEntity incident,
                                        String triggerReason,
                                        String triggerBy,
-                                       List<KnowledgeSuggestionRecord> knowledgeSuggestions) {
+                                       List<KnowledgeSuggestionRecord> knowledgeSuggestions,
+                                       List<CmServiceLogSnapshotRecord> serviceLogs) {
         StringBuilder builder = new StringBuilder();
-        builder.append("Analyze the incident below and return JSON only.\n");
+        builder.append("请分析以下事件，并且只返回 JSON 对象。所有自然语言字段值必须是简体中文。\n");
         builder.append("incidentNo: ").append(safe(incident.getIncidentNo())).append("\n");
         builder.append("serviceType: ").append(safe(incident.getServiceType())).append("\n");
         builder.append("severity: ").append(safe(incident.getSeverity())).append("\n");
@@ -163,8 +172,10 @@ public class LlmDiagnosisService {
         builder.append("owner: ").append(defaultIfBlank(incident.getOwner(), "UNKNOWN")).append("\n");
         builder.append("triggerBy: ").append(defaultIfBlank(triggerBy, "UNKNOWN")).append("\n");
         builder.append("triggerReason: ").append(defaultIfBlank(triggerReason, "manual diagnosis")).append("\n");
+        builder.append("Current service logs (highest priority):\n");
+        appendServiceLogs(builder, serviceLogs, 12, 520);
         builder.append("Evidence:\n");
-        appendList(builder, incident.getEvidence(), 6, 240);
+        appendList(builder, incident.getEvidence(), 10, 320);
         builder.append("Avoided actions:\n");
         appendList(builder, incident.getAvoidedActions(), 3, 180);
         if (knowledgeSuggestions != null && !knowledgeSuggestions.isEmpty()) {
@@ -172,15 +183,40 @@ public class LlmDiagnosisService {
             for (KnowledgeSuggestionRecord suggestion : knowledgeSuggestions) {
                 builder.append("- title: ").append(defaultIfBlank(suggestion.getTitle(), "Untitled knowledge article"))
                     .append(" | domain: ").append(defaultIfBlank(suggestion.getDomain(), "UNKNOWN"))
-                    .append(" | summary: ").append(truncate(defaultIfBlank(suggestion.getSummary(), "N/A"), 200))
+                    .append(" | summary: ").append(truncate(defaultIfBlank(suggestion.getSummary(), "N/A"), 240))
                     .append("\n");
             }
         }
         builder.append("Requirements:\n");
-        builder.append("- Base the diagnosis on current evidence only.\n");
-        builder.append("- Prefer role logs, JMX, service state, SQL execution context, and dependencies.\n");
+        builder.append("- Base the diagnosis on current evidence only; do not invent facts.\n");
+        builder.append("- Give highest priority to the current service logs above, especially WARN/ERROR lines and their surrounding context.\n");
+        builder.append("- Root cause must name the affected node, role, component, and the concrete failure symptom visible in the logs.\n");
+        builder.append("- Recommendations must be specific, executable, and tied to the exact component or node implicated by the logs.\n");
+        builder.append("- If the logs indicate cross-component propagation, state that path explicitly in crossComponentPath.\n");
         builder.append("- If evidence is insufficient, say that in followUps instead of inventing facts.\n");
         return builder.toString();
+    }
+
+    private void appendServiceLogs(StringBuilder builder,
+                                   List<CmServiceLogSnapshotRecord> serviceLogs,
+                                   int limit,
+                                   int maxItemLength) {
+        if (serviceLogs == null || serviceLogs.isEmpty()) {
+            builder.append("- none\n");
+            return;
+        }
+        int count = 0;
+        for (CmServiceLogSnapshotRecord value : serviceLogs) {
+            builder.append("- [")
+                .append(defaultIfBlank(value.getLogType(), "LOG"))
+                .append("] ")
+                .append(truncate(defaultIfBlank(value.getLogText(), "empty"), maxItemLength))
+                .append("\n");
+            count++;
+            if (count >= limit) {
+                break;
+            }
+        }
     }
 
     private void appendList(StringBuilder builder, List<String> values, int limit, int maxItemLength) {
@@ -485,7 +521,14 @@ public class LlmDiagnosisService {
 
     private int effectiveMaxTokens(DiagnosisLlmSettingsEntity settings) {
         int configured = settings == null ? 0 : settings.getMaxTokens();
-        return Math.max(configured, 2048);
+        if (configured <= 0) {
+            return 0;
+        }
+        // Treat the old platform default 2048 as "unlimited" for backward compatibility.
+        if (configured == 2048) {
+            return 0;
+        }
+        return configured;
     }
 
     private double clamp(double value, double min, double max) {

@@ -6,6 +6,7 @@ import com.guardian.hadoop.diagnosis.DiagnosisTaskRequest;
 import com.guardian.hadoop.diagnosis.DiagnosisTaskResponse;
 import com.guardian.hadoop.integration.cm.ClouderaManagerSyncResponse;
 import com.guardian.hadoop.integration.cm.ClouderaManagerSyncService;
+import com.guardian.hadoop.integration.cm.CmServiceLogSnapshotRecord;
 import com.guardian.hadoop.knowledge.KnowledgeSuggestionRecord;
 import com.guardian.hadoop.knowledge.KnowledgeSuggestionService;
 import com.guardian.hadoop.shared.DashboardSummary;
@@ -82,6 +83,12 @@ public class IncidentController {
     public List<KnowledgeSuggestionRecord> getIncidentKnowledgeSuggestions(@PathVariable long incidentId) {
         ensureIncidentExists(incidentId);
         return knowledgeSuggestionService.getSuggestions(incidentId);
+    }
+
+    @GetMapping("/incidents/{incidentId}/service-logs")
+    public List<CmServiceLogSnapshotRecord> getIncidentServiceLogs(@PathVariable long incidentId) {
+        ensureIncidentExists(incidentId);
+        return guardianDataService.getIncidentServiceLogs(incidentId);
     }
 
     @GetMapping("/incidents/{incidentId}/approvals")

@@ -189,6 +189,15 @@ export type CmServiceStatus = {
   logPreviewLines: string[];
 };
 
+export type CmServiceLogSnapshot = {
+  clusterName: string;
+  serviceName: string;
+  serviceType: string;
+  logType: string;
+  logText: string;
+  collectedAt: string;
+};
+
 export type CmCurrentStatusResponse = {
   success: boolean;
   enabled: boolean;
@@ -199,6 +208,7 @@ export type CmCurrentStatusResponse = {
   serviceCount: number;
   unhealthyServiceCount: number;
   services: CmServiceStatus[];
+  recentLogs: CmServiceLogSnapshot[];
 };
 
 export type SystemStatus = {
@@ -327,4 +337,20 @@ export type CurrentUser = {
   username: string;
   displayName: string;
   role: string;
+};
+
+export type ClusterInspectionReport = {
+  id: number;
+  clusterName: string;
+  reportTitle: string;
+  overallRisk: string;
+  status: string;
+  summary: string;
+  markdownContent: string;
+  generatedBy: string;
+  llmModel: string | null;
+  sourceCollectedAt: string | null;
+  completedAt: string | null;
+  errorMessage: string | null;
+  createdAt: string;
 };

@@ -4,7 +4,9 @@ import type {
   ApprovalRecord,
   ClouderaManagerSettings,
   ClouderaManagerSyncResponse,
+  ClusterInspectionReport,
   CmCurrentStatusResponse,
+  CmServiceLogSnapshot,
   CurrentUser,
   DashboardSummary,
   DataSourceConfig,
@@ -171,6 +173,14 @@ export function getClouderaManagerCurrentStatus(): Promise<CmCurrentStatusRespon
   return writeJsonWithTimeout("/integrations/cloudera-manager/current-status", "POST", 90000);
 }
 
+export function getClouderaManagerCurrentLogs(): Promise<CmServiceLogSnapshot[]> {
+  return readJson("/integrations/cloudera-manager/current-logs");
+}
+
+export function getIncidentServiceLogs(incidentId: number): Promise<CmServiceLogSnapshot[]> {
+  return readJson(`/incidents/${incidentId}/service-logs`);
+}
+
 async function writeJsonWithTimeout<T>(path: string, method: string, timeoutMs: number, payload?: unknown): Promise<T> {
   const response = await apiFetchWithTimeout(path, timeoutMs, {
     method,
@@ -229,6 +239,26 @@ export function saveKnowledgeArticle(payload: KnowledgeArticleRequest): Promise<
 
 export function saveKnowledgeQuickEntry(payload: KnowledgeQuickEntryRequest): Promise<KnowledgeArticle> {
   return writeJson("/knowledge/quick-entry", "POST", payload);
+}
+
+export function getClusterInspectionReports(): Promise<ClusterInspectionReport[]> {
+  return readJson("/inspections");
+}
+
+export function getClusterInspectionReport(reportId: number): Promise<ClusterInspectionReport> {
+  return readJson(`/inspections/${reportId}`);
+}
+
+export function createClusterInspectionReport(triggeredBy = "frontend-operator"): Promise<ClusterInspectionReport> {
+  return writeJson("/inspections", "POST", { triggeredBy });
+}
+
+export async function downloadClusterInspectionReportDocx(reportId: number): Promise<Blob> {
+  const response = await apiFetch(`/inspections/${reportId}/export/docx`);
+  if (!response.ok) {
+    throw new Error(await buildApiError(response));
+  }
+  return response.blob();
 }
 
 export async function login(username: string, password: string): Promise<CurrentUser> {

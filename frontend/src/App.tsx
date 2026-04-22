@@ -4,6 +4,7 @@ import { getCurrentUser, logout } from "./lib/api";
 import type { CurrentUser } from "./lib/types";
 import { IncidentDetailPage } from "./pages/IncidentDetailPage";
 import { IncidentListPage } from "./pages/IncidentListPage";
+import { InspectionPage } from "./pages/InspectionPage";
 import { LlmConsolePage } from "./pages/LlmConsolePage";
 import { LoginPage } from "./pages/LoginPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -80,6 +81,13 @@ export default function App() {
               <span className="nav-copy">开启独立会话，连续追问 SQL、排障、脚本和工具开发问题。</span>
             </span>
           </NavLink>
+          <NavLink className="nav-link" to="/inspections">
+            <span className="nav-index">04</span>
+            <span className="nav-body">
+              <span className="nav-title">巡检报告中心</span>
+              <span className="nav-copy">汇总当前集群状态、日志、事件与知识库证据，生成并导出 DOCX 巡检报告。</span>
+            </span>
+          </NavLink>
         </nav>
 
         <div className="sidebar-foot stack-md">
@@ -117,6 +125,7 @@ export default function App() {
             <Route path="/" element={<IncidentListPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/llm-console" element={<LlmConsolePage />} />
+            <Route path="/inspections" element={<InspectionPage />} />
             <Route path="/incidents/:incidentId" element={<IncidentDetailPage />} />
           </Routes>
         </div>

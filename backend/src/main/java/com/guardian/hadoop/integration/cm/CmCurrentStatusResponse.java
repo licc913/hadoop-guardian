@@ -15,6 +15,7 @@ public class CmCurrentStatusResponse {
     private final int serviceCount;
     private final int unhealthyServiceCount;
     private final List<CmServiceStatusRecord> services;
+    private final List<CmServiceLogSnapshotRecord> recentLogs;
 
     public CmCurrentStatusResponse(boolean success,
                                    boolean enabled,
@@ -24,7 +25,8 @@ public class CmCurrentStatusResponse {
                                    Instant collectedAt,
                                    int serviceCount,
                                    int unhealthyServiceCount,
-                                   List<CmServiceStatusRecord> services) {
+                                   List<CmServiceStatusRecord> services,
+                                   List<CmServiceLogSnapshotRecord> recentLogs) {
         this.success = success;
         this.enabled = enabled;
         this.message = message;
@@ -34,6 +36,7 @@ public class CmCurrentStatusResponse {
         this.serviceCount = serviceCount;
         this.unhealthyServiceCount = unhealthyServiceCount;
         this.services = services == null ? new ArrayList<CmServiceStatusRecord>() : services;
+        this.recentLogs = recentLogs == null ? new ArrayList<CmServiceLogSnapshotRecord>() : recentLogs;
     }
 
     public boolean isSuccess() {
@@ -70,5 +73,9 @@ public class CmCurrentStatusResponse {
 
     public List<CmServiceStatusRecord> getServices() {
         return services;
+    }
+
+    public List<CmServiceLogSnapshotRecord> getRecentLogs() {
+        return recentLogs;
     }
 }
