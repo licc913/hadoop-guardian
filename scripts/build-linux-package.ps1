@@ -63,19 +63,11 @@ Copy-Item -Force $postgresRuntimeSource $postgresRuntimeTarget
 $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
 
 New-Item -ItemType Directory -Force -Path (Join-Path $stagingDir "sql") | Out-Null
-foreach ($file in @(
-    "001_init_schema.sql",
-    "003_workflow_schema.sql",
-    "005_datasource_schema.sql",
-    "007_knowledge_base_schema.sql",
-    "009_postgres_demo_data_zh.sql",
-    "010_cleanup_duplicate_demo_incidents.sql",
-    "011_cleanup_demo_seed_data.sql",
-    "012_knowledge_document_chunk_schema.sql",
-    "013_cluster_inspection_schema.sql"
-)) {
-    Copy-Item -Force (Join-Path $projectRoot "sql\$file") (Join-Path $stagingDir "sql\$file")
-}
+Get-ChildItem (Join-Path $projectRoot "sql") -Filter *.sql |
+    Sort-Object Name |
+    ForEach-Object {
+        Copy-Item -Force $_.FullName (Join-Path $stagingDir ("sql\" + $_.Name))
+    }
 
 if ($tar) {
     & $tar.Source -czf $tarPath -C $releaseRoot $releaseName

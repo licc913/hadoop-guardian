@@ -69,4 +69,5 @@ guardian:
   cm-log:
     collection-initial-delay-ms: ${GUARDIAN_CM_LOG_COLLECTION_INITIAL_DELAY_MS:10000}
     collection-fixed-delay-ms: ${GUARDIAN_CM_LOG_COLLECTION_FIXED_DELAY_MS:60000}
+    role-log-timeout-ms: ${GUARDIAN_CM_ROLE_LOG_TIMEOUT_MS:20000}
     retention-hours: ${GUARDIAN_CM_LOG_RETENTION_HOURS:24}

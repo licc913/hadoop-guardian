@@ -93,7 +93,7 @@ public class ClusterInspectionService {
     }
 
     public void generateReportContent(ClusterInspectionReportEntity entity) {
-        CmCurrentStatusResponse currentStatus = currentStatusService.fetchCurrentStatus();
+        CmCurrentStatusResponse currentStatus = currentStatusService.fetchCurrentStatusForCollection();
         if (!currentStatus.isEnabled()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cloudera Manager 未启用，无法生成巡检报告");
         }

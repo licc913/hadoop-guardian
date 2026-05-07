@@ -366,6 +366,7 @@ set_guardian_environment() {
   export GUARDIAN_CM_USERNAME="${GuardianCmUsername}"
   export GUARDIAN_CM_PASSWORD="${GuardianCmPassword}"
   export GUARDIAN_CM_CLUSTER_NAME="${GuardianCmClusterName}"
+  export GUARDIAN_CM_ROLE_LOG_TIMEOUT_MS="${GuardianCmRoleLogTimeoutMs}"
   export GUARDIAN_LLM_ENABLED="${GuardianLlmEnabled}"
   export GUARDIAN_LLM_ENDPOINT="${GuardianLlmEndpoint}"
   export GUARDIAN_LLM_API_KEY="${GuardianLlmApiKey}"

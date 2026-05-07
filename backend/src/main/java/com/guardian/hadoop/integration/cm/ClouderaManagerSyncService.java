@@ -2,6 +2,9 @@ package com.guardian.hadoop.integration.cm;
 
 import com.guardian.hadoop.incident.IncidentEntity;
 import com.guardian.hadoop.incident.IncidentRepository;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
@@ -9,6 +12,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.HttpStatusCodeException;
@@ -17,8 +23,10 @@ import org.springframework.web.client.RestClientException;
 @Service
 public class ClouderaManagerSyncService {
 
+    private static final Logger logger = LoggerFactory.getLogger(ClouderaManagerSyncService.class);
     private static final long OPEN_DUPLICATE_WINDOW_HOURS = 12L;
     private static final long CLOSED_DUPLICATE_WINDOW_MINUTES = 30L;
+    private static final int MAX_INCIDENT_TITLE_LENGTH = 240;
 
     private final ClouderaManagerClient client;
     private final IncidentRepository incidentRepository;
@@ -40,16 +48,32 @@ public class ClouderaManagerSyncService {
         Instant now = Instant.now();
 
         if (!settings.isEnabled()) {
-            return new ClouderaManagerSyncResponse(false, false, 0, 0, 0,
+            return new ClouderaManagerSyncResponse(
+                false,
+                false,
+                0,
+                0,
+                0,
                 "Cloudera Manager 告警同步未启用。",
                 "请先在设置页启用并保存 Cloudera Manager 配置。",
-                now, endpoint, new ArrayList<String>());
+                now,
+                endpoint,
+                new ArrayList<String>()
+            );
         }
         if (!settingsService.getSettings().isConfigured()) {
-            return new ClouderaManagerSyncResponse(false, true, 0, 0, 0,
+            return new ClouderaManagerSyncResponse(
+                false,
+                true,
+                0,
+                0,
+                0,
                 "Cloudera Manager 接入信息不完整。",
                 "请补齐基础地址、API 版本、用户名、密码和集群名称后再执行同步。",
-                now, endpoint, new ArrayList<String>());
+                now,
+                endpoint,
+                new ArrayList<String>()
+            );
         }
 
         try {
@@ -67,7 +91,23 @@ public class ClouderaManagerSyncService {
                 }
 
                 Instant occurredAt = parseInstant(item.getEventTime());
-                if (incidentRepository.findBySourceId(item.getId()).isPresent() || isDuplicateAlert(existingIncidents, item, occurredAt)) {
+                Optional<IncidentEntity> sourceMatch = incidentRepository.findBySourceId(item.getId());
+                if (sourceMatch.isPresent()) {
+                    updateIncidentMetadata(sourceMatch.get(), item, occurredAt);
+                    skippedCount++;
+                    continue;
+                }
+
+                Optional<IncidentEntity> incidentNoMatch = incidentRepository.findByIncidentNo("CM-" + item.getId());
+                if (incidentNoMatch.isPresent()) {
+                    updateIncidentMetadata(incidentNoMatch.get(), item, occurredAt);
+                    skippedCount++;
+                    continue;
+                }
+
+                IncidentEntity duplicate = findDuplicateAlert(existingIncidents, item, occurredAt);
+                if (duplicate != null) {
+                    updateIncidentMetadata(duplicate, item, occurredAt);
                     skippedCount++;
                     continue;
                 }
@@ -76,27 +116,43 @@ public class ClouderaManagerSyncService {
                 incident.setIncidentNo("CM-" + item.getId());
                 incident.setSourceType("CM_ALERT");
                 incident.setSourceId(item.getId());
+                incident.setEventFingerprint(buildIncomingFingerprint(item));
+                incident.setGovernanceStatus("ACTIVE");
                 incident.setClusterName(settings.getClusterName());
                 incident.setServiceType(mapServiceType(item));
                 incident.setSeverity(mapSeverity(item.getSeverity()));
                 incident.setStatus("OPEN");
+                incident.setFirstSeenAt(occurredAt);
+                incident.setLastSeenAt(occurredAt);
+                incident.setOccurrenceCount(1);
                 incident.setTitle(buildTitle(item, incident.getServiceType()));
                 incident.setSummary(buildSummary(item));
                 incident.setImpactScope(buildImpactScope(item));
                 incident.setOwner("cm-sync");
                 incident.setOccurredAt(occurredAt);
                 incident.setEvidence(buildEvidence(item, endpoint));
-                incident.setAvoidedActions(Arrays.asList(
+                incident.setAvoidedActions(new ArrayList<String>(Arrays.asList(
                     "在未确认根因前不要直接重启集群服务。",
                     "未审批前不要直接下发配置变更或扩大操作范围。"
-                ));
+                )));
 
-                IncidentEntity saved = incidentRepository.save(incident);
-                existingIncidents.add(saved);
-                importedCount++;
+                try {
+                    IncidentEntity saved = incidentRepository.save(incident);
+                    existingIncidents.add(saved);
+                    importedCount++;
 
-                if (importedIncidents.size() < 5) {
-                    importedIncidents.add(saved.getIncidentNo() + " | " + saved.getTitle());
+                    if (importedIncidents.size() < 5) {
+                        importedIncidents.add(saved.getIncidentNo() + " | " + saved.getTitle());
+                    }
+                } catch (Exception exception) {
+                    Optional<IncidentEntity> incidentNoConflict = incidentRepository.findByIncidentNo("CM-" + item.getId());
+                    if (incidentNoConflict.isPresent()) {
+                        updateIncidentMetadata(incidentNoConflict.get(), item, occurredAt);
+                        skippedCount++;
+                        continue;
+                    }
+                    skippedCount++;
+                    logger.error("Failed to persist synced CM alert {}", item.getId(), exception);
                 }
             }
 
@@ -107,29 +163,62 @@ public class ClouderaManagerSyncService {
                 importedCount,
                 skippedCount,
                 importedCount > 0 ? "Cloudera Manager 告警同步完成。" : "Cloudera Manager 告警同步完成，本次没有新增事件。",
-                String.format(Locale.ROOT,
+                String.format(
+                    Locale.ROOT,
                     "从 %s 拉取 %d 条告警，导入 %d 条，跳过 %d 条重复或无效告警。",
-                    endpoint, items.size(), importedCount, skippedCount),
+                    endpoint,
+                    items.size(),
+                    importedCount,
+                    skippedCount
+                ),
                 Instant.now(),
                 endpoint,
                 importedIncidents
             );
         } catch (HttpStatusCodeException exception) {
             return new ClouderaManagerSyncResponse(
-                false, true, 0, 0, 0,
+                false,
+                true,
+                0,
+                0,
+                0,
                 "Cloudera Manager 告警同步失败。",
                 "HTTP " + exception.getRawStatusCode() + " " + exception.getStatusText(),
-                Instant.now(), endpoint, new ArrayList<String>());
+                Instant.now(),
+                endpoint,
+                new ArrayList<String>()
+            );
         } catch (RestClientException exception) {
             return new ClouderaManagerSyncResponse(
-                false, true, 0, 0, 0,
+                false,
+                true,
+                0,
+                0,
+                0,
                 "Cloudera Manager 告警同步失败。",
                 defaultIfBlank(exception.getMessage(), "无法连接或解析 Cloudera Manager 告警响应。"),
-                Instant.now(), endpoint, new ArrayList<String>());
+                Instant.now(),
+                endpoint,
+                new ArrayList<String>()
+            );
+        } catch (Exception exception) {
+            logger.error("Unexpected error while syncing CM alerts", exception);
+            return new ClouderaManagerSyncResponse(
+                false,
+                true,
+                0,
+                0,
+                0,
+                "Cloudera Manager 告警同步失败。",
+                defaultIfBlank(exception.getMessage(), "告警同步发生未知错误。"),
+                Instant.now(),
+                endpoint,
+                new ArrayList<String>()
+            );
         }
     }
 
-    private boolean isDuplicateAlert(List<IncidentEntity> existingIncidents, ApiAlertItem item, Instant occurredAt) {
+    private IncidentEntity findDuplicateAlert(List<IncidentEntity> existingIncidents, ApiAlertItem item, Instant occurredAt) {
         String incomingFingerprint = buildIncomingFingerprint(item);
         for (IncidentEntity existing : existingIncidents) {
             if (!"CM_ALERT".equalsIgnoreCase(existing.getSourceType())) {
@@ -144,29 +233,61 @@ public class ClouderaManagerSyncService {
                 : Duration.ofHours(OPEN_DUPLICATE_WINDOW_HOURS).toMinutes();
             Duration delta = Duration.between(existing.getOccurredAt(), occurredAt).abs();
             if (delta.toMinutes() <= limitMinutes) {
-                return true;
+                return existing;
             }
         }
-        return false;
+        return null;
+    }
+
+    private void updateIncidentMetadata(IncidentEntity incident, ApiAlertItem item, Instant occurredAt) {
+        incident.setLastSeenAt(occurredAt);
+        incident.setOccurredAt(occurredAt);
+        incident.setOccurrenceCount(Math.max(incident.getOccurrenceCount(), 0) + 1);
+        if (!"SUPPRESSED".equalsIgnoreCase(incident.getGovernanceStatus())) {
+            incident.setGovernanceStatus("ACTIVE");
+        }
+        if (incident.getFirstSeenAt() == null) {
+            incident.setFirstSeenAt(occurredAt);
+        }
+        if (!isBlank(item.getId())) {
+            incident.setSourceId(item.getId());
+        }
+        incident.setEventFingerprint(buildIncomingFingerprint(item));
     }
 
     private String buildExistingFingerprint(IncidentEntity incident) {
-        return String.join("|",
+        String raw = String.join("|",
             safe(incident.getClusterName()).toUpperCase(Locale.ROOT),
             safe(incident.getServiceType()).toUpperCase(Locale.ROOT),
             normalizeAlertText(incident.getTitle()),
             normalizeAlertText(incident.getSummary())
         );
+        return fingerprint(raw);
     }
 
     private String buildIncomingFingerprint(ApiAlertItem item) {
         String serviceType = mapServiceType(item);
-        return String.join("|",
+        String raw = String.join("|",
             safe(settingsService.getEffectiveSettings().getClusterName()).toUpperCase(Locale.ROOT),
             serviceType.toUpperCase(Locale.ROOT),
             normalizeAlertText(buildTitle(item, serviceType)),
             normalizeAlertText(buildSummary(item))
         );
+        return fingerprint(raw);
+    }
+
+    private String fingerprint(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(safe(value).getBytes(StandardCharsets.UTF_8));
+            StringBuilder builder = new StringBuilder(bytes.length * 2);
+            for (byte current : bytes) {
+                builder.append(String.format(Locale.ROOT, "%02x", current));
+            }
+            return builder.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            return Integer.toHexString(safe(value).hashCode()).toUpperCase(Locale.ROOT);
+        }
     }
 
     private String normalizeAlertText(String value) {
@@ -222,7 +343,7 @@ public class ClouderaManagerSyncService {
     private String buildTitle(ApiAlertItem item, String serviceType) {
         String serviceLabel = firstNonBlank(item.getServiceName(), serviceType);
         String subject = firstNonBlank(item.getRoleName(), item.getEntityName(), item.getCategory(), "运行告警");
-        return serviceLabel + " • " + subject;
+        return truncate(serviceLabel + " · " + subject, MAX_INCIDENT_TITLE_LENGTH);
     }
 
     private String buildSummary(ApiAlertItem item) {
@@ -306,5 +427,12 @@ public class ClouderaManagerSyncService {
 
     private String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    private String truncate(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, Math.max(0, maxLength - 3)) + "...";
     }
 }

@@ -12,21 +12,31 @@ import com.guardian.hadoop.diagnosis.DiagnosisTaskRepository;
 import com.guardian.hadoop.diagnosis.DiagnosisTaskResponse;
 import com.guardian.hadoop.diagnosis.LlmDiagnosisResult;
 import com.guardian.hadoop.diagnosis.LlmDiagnosisService;
+import com.guardian.hadoop.incident.CrossComponentAnalysisRecord;
+import com.guardian.hadoop.incident.CrossComponentAnalysisService;
 import com.guardian.hadoop.incident.IncidentCloseResponse;
 import com.guardian.hadoop.incident.IncidentEntity;
+import com.guardian.hadoop.incident.IncidentGovernanceResponse;
 import com.guardian.hadoop.incident.IncidentRecord;
 import com.guardian.hadoop.incident.IncidentRepository;
+import com.guardian.hadoop.inspection.ClusterInspectionReportRepository;
 import com.guardian.hadoop.integration.cm.CmServiceLogSnapshotRecord;
 import com.guardian.hadoop.integration.cm.CmServiceLogSnapshotService;
 import com.guardian.hadoop.integration.cm.ClouderaManagerSettingsService;
 import com.guardian.hadoop.knowledge.KnowledgeSuggestionRecord;
 import com.guardian.hadoop.knowledge.KnowledgeSuggestionService;
 import com.guardian.hadoop.workflow.ApprovalRecord;
+import com.guardian.hadoop.workflow.ApprovalRecordCreateRequest;
+import com.guardian.hadoop.workflow.ApprovalRecordEntity;
 import com.guardian.hadoop.workflow.ApprovalRecordRepository;
 import com.guardian.hadoop.workflow.ExecutionRecord;
+import com.guardian.hadoop.workflow.ExecutionRecordCreateRequest;
+import com.guardian.hadoop.workflow.ExecutionRecordEntity;
 import com.guardian.hadoop.workflow.ExecutionRecordRepository;
 import com.guardian.hadoop.workflow.PostmortemRecord;
+import com.guardian.hadoop.workflow.PostmortemRecordEntity;
 import com.guardian.hadoop.workflow.PostmortemRecordRepository;
+import com.guardian.hadoop.workflow.PostmortemUpsertRequest;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -59,6 +69,9 @@ public class GuardianDataService {
     private final CmServiceLogSnapshotService logSnapshotService;
     private final KnowledgeSuggestionService knowledgeSuggestionService;
     private final LlmDiagnosisService llmDiagnosisService;
+    private final ClusterInspectionReportRepository inspectionReportRepository;
+    private final PlatformRuntimeStatusService runtimeStatusService;
+    private final CrossComponentAnalysisService crossComponentAnalysisService;
     private final String datasourceUrl;
 
     public GuardianDataService(IncidentRepository incidentRepository,
@@ -72,6 +85,9 @@ public class GuardianDataService {
                                CmServiceLogSnapshotService logSnapshotService,
                                KnowledgeSuggestionService knowledgeSuggestionService,
                                LlmDiagnosisService llmDiagnosisService,
+                               ClusterInspectionReportRepository inspectionReportRepository,
+                               PlatformRuntimeStatusService runtimeStatusService,
+                               CrossComponentAnalysisService crossComponentAnalysisService,
                                @Value("${spring.datasource.url}") String datasourceUrl) {
         this.incidentRepository = incidentRepository;
         this.diagnosisRepository = diagnosisRepository;
@@ -84,6 +100,9 @@ public class GuardianDataService {
         this.logSnapshotService = logSnapshotService;
         this.knowledgeSuggestionService = knowledgeSuggestionService;
         this.llmDiagnosisService = llmDiagnosisService;
+        this.inspectionReportRepository = inspectionReportRepository;
+        this.runtimeStatusService = runtimeStatusService;
+        this.crossComponentAnalysisService = crossComponentAnalysisService;
         this.datasourceUrl = datasourceUrl;
     }
 
@@ -129,12 +148,145 @@ public class GuardianDataService {
             .orElse(null);
     }
 
+    @Transactional
+    public IncidentGovernanceResponse suppressIncident(long incidentId, String operator, String note, Integer suppressMinutes) {
+        IncidentEntity incident = incidentRepository.findById(incidentId).orElse(null);
+        if (incident == null) {
+            return null;
+        }
+
+        Instant now = Instant.now();
+        int minutes = suppressMinutes == null || suppressMinutes.intValue() <= 0 ? 120 : suppressMinutes.intValue();
+        incident.setGovernanceStatus("SUPPRESSED");
+        incident.setSuppressedUntil(now.plusSeconds(minutes * 60L));
+        incident.setGovernanceNote(buildGovernanceNote(operator, note, "suppressed for " + minutes + " minutes"));
+        incidentRepository.save(incident);
+        return new IncidentGovernanceResponse(
+            true,
+            "Incident suppressed and removed from active queue until the suppression window expires.",
+            IncidentRecord.fromEntity(incident),
+            now
+        );
+    }
+
+    @Transactional
+    public IncidentGovernanceResponse resumeIncident(long incidentId, String operator, String note) {
+        IncidentEntity incident = incidentRepository.findById(incidentId).orElse(null);
+        if (incident == null) {
+            return null;
+        }
+
+        Instant now = Instant.now();
+        incident.setGovernanceStatus("ACTIVE");
+        incident.setSuppressedUntil(null);
+        incident.setGovernanceNote(buildGovernanceNote(operator, note, "suppression cleared"));
+        incidentRepository.save(incident);
+        return new IncidentGovernanceResponse(
+            true,
+            "Incident restored to the active queue.",
+            IncidentRecord.fromEntity(incident),
+            now
+        );
+    }
+
+    @Transactional
+    public ApprovalRecord createApprovalRecord(long incidentId, ApprovalRecordCreateRequest request) {
+        IncidentEntity incident = incidentRepository.findById(incidentId).orElse(null);
+        if (incident == null) {
+            return null;
+        }
+        ActionRecommendationEntity action = resolveActionRecommendation(incidentId, request == null ? null : request.getActionRecommendationId());
+        if (action == null) {
+            return null;
+        }
+
+        ApprovalRecordEntity entity = new ApprovalRecordEntity();
+        entity.setIncident(incident);
+        entity.setActionRecommendation(action);
+        entity.setApprovalStatus(defaultIfBlank(request.getApprovalStatus(), "PENDING"));
+        entity.setRequestedBy(defaultIfBlank(request.getRequestedBy(), "frontend-operator"));
+        entity.setApprover(trimToNull(request.getApprover()));
+        entity.setComment(trimToNull(request.getComment()));
+        entity.setRequestedAt(Instant.now());
+        if (!"PENDING".equalsIgnoreCase(entity.getApprovalStatus())) {
+            entity.setDecidedAt(Instant.now());
+            if ("APPROVED".equalsIgnoreCase(entity.getApprovalStatus())) {
+                action.setStatus("APPROVED");
+            } else if ("REJECTED".equalsIgnoreCase(entity.getApprovalStatus())) {
+                action.setStatus("REJECTED");
+            }
+        } else {
+            action.setStatus("AWAITING_APPROVAL");
+        }
+        approvalRecordRepository.save(entity);
+        actionRecommendationRepository.save(action);
+        return ApprovalRecord.fromEntity(entity);
+    }
+
+    @Transactional
+    public ExecutionRecord createExecutionRecord(long incidentId, ExecutionRecordCreateRequest request) {
+        IncidentEntity incident = incidentRepository.findById(incidentId).orElse(null);
+        if (incident == null) {
+            return null;
+        }
+        ActionRecommendationEntity action = resolveActionRecommendation(incidentId, request == null ? null : request.getActionRecommendationId());
+        if (action == null) {
+            return null;
+        }
+
+        ExecutionRecordEntity entity = new ExecutionRecordEntity();
+        entity.setIncident(incident);
+        entity.setActionRecommendation(action);
+        entity.setExecutionStatus(defaultIfBlank(request.getExecutionStatus(), "RUNNING"));
+        entity.setExecutor(defaultIfBlank(request.getExecutor(), "frontend-operator"));
+        entity.setExecutionSummary(defaultIfBlank(request.getExecutionSummary(), "Execution record created from incident workflow."));
+        entity.setStartedAt(Instant.now());
+        if (!"RUNNING".equalsIgnoreCase(entity.getExecutionStatus())) {
+            entity.setFinishedAt(Instant.now());
+        }
+        executionRecordRepository.save(entity);
+
+        if ("SUCCESS".equalsIgnoreCase(entity.getExecutionStatus())) {
+            action.setStatus("DONE");
+        } else if ("FAILED".equalsIgnoreCase(entity.getExecutionStatus())) {
+            action.setStatus("FAILED");
+        } else {
+            action.setStatus("EXECUTING");
+        }
+        actionRecommendationRepository.save(action);
+        return ExecutionRecord.fromEntity(entity);
+    }
+
+    @Transactional
+    public PostmortemRecord upsertPostmortem(long incidentId, PostmortemUpsertRequest request) {
+        IncidentEntity incident = incidentRepository.findById(incidentId).orElse(null);
+        if (incident == null || request == null) {
+            return null;
+        }
+
+        PostmortemRecordEntity entity = postmortemRecordRepository.findByIncident_Id(incidentId)
+            .orElseGet(PostmortemRecordEntity::new);
+        entity.setIncident(incident);
+        entity.setSummary(defaultIfBlank(request.getSummary(), "No summary provided."));
+        entity.setRootCause(defaultIfBlank(request.getRootCause(), "Root cause is under review."));
+        entity.setImpactStatement(defaultIfBlank(request.getImpactStatement(), "Impact statement is pending."));
+        entity.setTimeline(normalizeLines(request.getTimeline()));
+        entity.setPreventionItems(normalizeLines(request.getPreventionItems()));
+        entity.setUpdatedAt(Instant.now());
+        postmortemRecordRepository.save(entity);
+        return PostmortemRecord.fromEntity(entity);
+    }
+
     public List<CmServiceLogSnapshotRecord> getIncidentServiceLogs(long incidentId) {
         IncidentEntity incident = incidentRepository.findById(incidentId).orElse(null);
         if (incident == null) {
             return Collections.emptyList();
         }
         return logSnapshotService.getLogsForIncident(incident);
+    }
+
+    public CrossComponentAnalysisRecord getCrossComponentAnalysis(long incidentId) {
+        return crossComponentAnalysisService.analyze(incidentId);
     }
 
     @Transactional
@@ -288,19 +440,33 @@ public class GuardianDataService {
         long openIncidents = incidents.stream().filter(incident -> "OPEN".equalsIgnoreCase(incident.getStatus())).count();
         long diagnosingIncidents = incidents.stream().filter(incident -> "DIAGNOSING".equalsIgnoreCase(incident.getStatus())).count();
         long criticalIncidents = incidents.stream().filter(incident -> "CRITICAL".equalsIgnoreCase(incident.getSeverity())).count();
+        long suppressedIncidents = incidentRepository.countByGovernanceStatus("SUPPRESSED");
         long actionRequired = actionRecommendationRepository.findAll().stream()
             .filter(record -> !"CLOSED".equalsIgnoreCase(record.getStatus()))
             .count();
-        return new DashboardSummary((int) openIncidents, (int) diagnosingIncidents, (int) criticalIncidents, (int) actionRequired);
+        return new DashboardSummary((int) openIncidents, (int) diagnosingIncidents, (int) criticalIncidents, (int) actionRequired, (int) suppressedIncidents);
     }
 
     public SystemStatusResponse getSystemStatus() {
         String databaseMode = datasourceUrl.contains("postgresql") ? "PostgreSQL" : "H2";
+        long inspectionRunningCount = inspectionReportRepository.countByStatus("RUNNING") + inspectionReportRepository.countByStatus("PENDING");
+        long inspectionFailedCount = inspectionReportRepository.countByStatus("FAILED");
         return new SystemStatusResponse(
             true,
             settingsService.getEffectiveSettings().isEnabled(),
             databaseMode,
-            getDistinctActiveRealtimeIncidents().size()
+            getDistinctActiveRealtimeIncidents().size(),
+            (int) incidentRepository.countByGovernanceStatus("SUPPRESSED"),
+            runtimeStatusService.getLastCmCollectionAt(),
+            runtimeStatusService.getLastCmCollectionSuccess(),
+            runtimeStatusService.getLastCmCollectionMessage(),
+            runtimeStatusService.getLastCmRecentLogCount(),
+            (int) inspectionRunningCount,
+            (int) inspectionFailedCount,
+            runtimeStatusService.getLastInspectionStartedAt(),
+            runtimeStatusService.getLastInspectionCompletedAt(),
+            runtimeStatusService.getLastInspectionStatus(),
+            runtimeStatusService.getLastInspectionMessage()
         );
     }
 
@@ -311,6 +477,7 @@ public class GuardianDataService {
     private List<IncidentEntity> getDistinctActiveIncidents() {
         return getDistinctIncidents().stream()
             .filter(incident -> !"CLOSED".equalsIgnoreCase(incident.getStatus()))
+            .filter(this::isIncidentVisible)
             .collect(Collectors.toList());
     }
 
@@ -318,6 +485,7 @@ public class GuardianDataService {
         return getDistinctIncidents().stream()
             .filter(incident -> "CM_CURRENT".equalsIgnoreCase(incident.getSourceType()))
             .filter(incident -> !"CLOSED".equalsIgnoreCase(incident.getStatus()))
+            .filter(this::isIncidentVisible)
             .collect(Collectors.toList());
     }
 
@@ -349,6 +517,55 @@ public class GuardianDataService {
             safe(incident.getServiceType()).toUpperCase(Locale.ROOT),
             safe(incident.getTitle()).toUpperCase(Locale.ROOT),
             safe(incident.getOccurredAt() == null ? null : incident.getOccurredAt().toString()));
+    }
+
+    private boolean isIncidentVisible(IncidentEntity incident) {
+        if (incident == null) {
+            return false;
+        }
+        if (!"SUPPRESSED".equalsIgnoreCase(incident.getGovernanceStatus())) {
+            return true;
+        }
+        Instant suppressedUntil = incident.getSuppressedUntil();
+        return suppressedUntil == null || !suppressedUntil.isAfter(Instant.now());
+    }
+
+    private String buildGovernanceNote(String operator, String note, String action) {
+        StringBuilder builder = new StringBuilder();
+        builder.append(defaultIfBlank(operator, "frontend-operator"))
+            .append(" @ ")
+            .append(Instant.now())
+            .append(" - ")
+            .append(defaultIfBlank(action, "updated governance state"));
+        if (hasText(note)) {
+            builder.append(" | ").append(note.trim());
+        }
+        return builder.toString();
+    }
+
+    private ActionRecommendationEntity resolveActionRecommendation(long incidentId, Long actionRecommendationId) {
+        if (actionRecommendationId != null) {
+            ActionRecommendationEntity entity = actionRecommendationRepository.findById(actionRecommendationId).orElse(null);
+            if (entity != null && entity.getIncident() != null && entity.getIncident().getId() != null
+                && entity.getIncident().getId().longValue() == incidentId) {
+                return entity;
+            }
+        }
+        return actionRecommendationRepository.findTopByIncident_IdOrderByCreatedAtDesc(incidentId);
+    }
+
+    private List<String> normalizeLines(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return values.stream()
+            .map(this::trimToNull)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toList());
+    }
+
+    private String trimToNull(String value) {
+        return hasText(value) ? value.trim() : null;
     }
 
     private String normalizeAlertText(String value) {

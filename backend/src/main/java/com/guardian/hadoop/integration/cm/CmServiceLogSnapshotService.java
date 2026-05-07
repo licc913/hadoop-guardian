@@ -18,6 +18,7 @@ import java.util.stream.Collectors;
 import javax.annotation.PostConstruct;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -100,6 +101,124 @@ public class CmServiceLogSnapshotService {
             .collect(Collectors.toList());
     }
 
+    public List<CmServiceLogSnapshotRecord> getLatestLogsForService(String clusterName, String serviceType, int limit) {
+        String normalizedCluster = defaultIfBlank(clusterName, "UNKNOWN_CLUSTER");
+        String normalizedServiceType = safe(serviceType).toUpperCase(Locale.ROOT);
+        if (normalizedServiceType.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<CmServiceLogSnapshotRecord> logs = new ArrayList<CmServiceLogSnapshotRecord>();
+        Set<String> delivered = new LinkedHashSet<String>();
+        int safeLimit = Math.max(1, Math.min(limit, 20));
+        List<CmServiceLogSnapshotEntity> entities = repository.findLatestByClusterAndServiceTypeIgnoreCase(
+            normalizedCluster,
+            normalizedServiceType,
+            PageRequest.of(0, 50)
+        );
+        if (entities.isEmpty()) {
+            entities = repository.findLatestByServiceTypeIgnoreCase(
+                normalizedServiceType,
+                PageRequest.of(0, 50)
+            );
+        }
+        for (CmServiceLogSnapshotEntity entity : entities) {
+            if (!isPersistableLogText(entity.getLogText())) {
+                continue;
+            }
+            String key = defaultIfBlank(entity.getLogHash(), defaultIfBlank(entity.getLogText(), ""));
+            if (!delivered.add(key)) {
+                continue;
+            }
+            logs.add(CmServiceLogSnapshotRecord.fromEntity(entity));
+            if (logs.size() >= safeLimit) {
+                break;
+            }
+        }
+        return logs;
+    }
+
+    public List<CmServiceLogSnapshotRecord> getRecentLogsForService(String clusterName,
+                                                                    String serviceName,
+                                                                    String serviceType,
+                                                                    Instant lookupStart,
+                                                                    int limit) {
+        String normalizedCluster = defaultIfBlank(clusterName, "UNKNOWN_CLUSTER");
+        String normalizedServiceName = defaultIfBlank(serviceName, serviceType);
+        String normalizedServiceType = safe(serviceType).toUpperCase(Locale.ROOT);
+        if (normalizedServiceType.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        int safeLimit = Math.max(1, Math.min(limit, 20));
+        PageRequest page = PageRequest.of(0, 60);
+        List<CmServiceLogSnapshotEntity> entities = repository.findLatestByClusterAndServiceNameAndServiceTypeAfterIgnoreCase(
+            normalizedCluster,
+            normalizedServiceName,
+            normalizedServiceType,
+            lookupStart == null ? Instant.now().minusSeconds(15 * 60L) : lookupStart,
+            page
+        );
+        if (entities.isEmpty()) {
+            entities = repository.findLatestByClusterAndServiceNameAndServiceTypeIgnoreCase(
+                normalizedCluster,
+                normalizedServiceName,
+                normalizedServiceType,
+                page
+            );
+        }
+
+        List<CmServiceLogSnapshotRecord> logs = new ArrayList<CmServiceLogSnapshotRecord>();
+        Set<String> delivered = new LinkedHashSet<String>();
+        for (CmServiceLogSnapshotEntity entity : entities) {
+            if (!isPersistableLogText(entity.getLogText())) {
+                continue;
+            }
+            String key = defaultIfBlank(entity.getLogHash(), defaultIfBlank(entity.getLogText(), ""));
+            if (!delivered.add(key)) {
+                continue;
+            }
+            logs.add(CmServiceLogSnapshotRecord.fromEntity(entity));
+            if (logs.size() >= safeLimit) {
+                break;
+            }
+        }
+        return logs;
+    }
+
+    public List<CmServiceLogSnapshotRecord> getRecentLogsForCluster(String clusterName,
+                                                                    Instant lookupStart,
+                                                                    int limit) {
+        String normalizedCluster = defaultIfBlank(clusterName, "UNKNOWN_CLUSTER");
+        int safeLimit = Math.max(1, Math.min(limit, 200));
+        PageRequest page = PageRequest.of(0, Math.max(safeLimit * 2, 50));
+        List<CmServiceLogSnapshotEntity> entities = repository.findLatestByClusterAfterIgnoreCase(
+            normalizedCluster,
+            lookupStart == null ? Instant.now().minusSeconds(15 * 60L) : lookupStart,
+            page
+        );
+        if (entities.isEmpty()) {
+            entities = repository.findLatestByClusterIgnoreCase(normalizedCluster, page);
+        }
+
+        List<CmServiceLogSnapshotRecord> logs = new ArrayList<CmServiceLogSnapshotRecord>();
+        Set<String> delivered = new LinkedHashSet<String>();
+        for (CmServiceLogSnapshotEntity entity : entities) {
+            if (!isPersistableLogText(entity.getLogText())) {
+                continue;
+            }
+            String key = defaultIfBlank(entity.getLogHash(), defaultIfBlank(entity.getLogText(), ""));
+            if (!delivered.add(key)) {
+                continue;
+            }
+            logs.add(CmServiceLogSnapshotRecord.fromEntity(entity));
+            if (logs.size() >= safeLimit) {
+                break;
+            }
+        }
+        return logs;
+    }
+
     public List<CmServiceLogSnapshotRecord> getLogsForIncident(IncidentEntity incident) {
         if (incident == null) {
             return Collections.emptyList();
@@ -115,16 +234,8 @@ public class CmServiceLogSnapshotService {
             ? Instant.now().minusSeconds(6 * 60 * 60)
             : incident.getOccurredAt().minusSeconds(6 * 60 * 60);
 
-        List<CmServiceLogSnapshotEntity> serviceLogs = new ArrayList<CmServiceLogSnapshotEntity>(
-            repository.findTop300ByClusterNameAndServiceTypeInAndCollectedAtAfterOrderByCollectedAtDescIdDesc(
-                clusterName,
-                serviceTypes,
-                lookupStart
-            )
-        );
-        if (serviceLogs.isEmpty()) {
-            serviceLogs.addAll(repository.findTop300ByClusterNameAndServiceTypeInOrderByCollectedAtDescIdDesc(clusterName, serviceTypes));
-        }
+        List<String> normalizedServiceTypes = normalizeServiceTypes(serviceTypes);
+        List<CmServiceLogSnapshotEntity> serviceLogs = loadIncidentServiceLogs(clusterName, normalizedServiceTypes, lookupStart);
         serviceLogs.removeIf(entity -> !isPersistableLogText(entity.getLogText()));
         if (serviceLogs.isEmpty()) {
             return Collections.emptyList();
@@ -163,6 +274,46 @@ public class CmServiceLogSnapshotService {
             }
         }
         return logs;
+    }
+
+    private List<CmServiceLogSnapshotEntity> loadIncidentServiceLogs(String clusterName,
+                                                                     List<String> serviceTypes,
+                                                                     Instant lookupStart) {
+        PageRequest recentPage = PageRequest.of(0, 300);
+        List<CmServiceLogSnapshotEntity> serviceLogs = new ArrayList<CmServiceLogSnapshotEntity>(
+            repository.findLatestByClusterAndServiceTypesAfterIgnoreCase(
+                clusterName,
+                serviceTypes,
+                lookupStart,
+                recentPage
+            )
+        );
+        if (!serviceLogs.isEmpty()) {
+            return serviceLogs;
+        }
+
+        serviceLogs.addAll(repository.findLatestByClusterAndServiceTypesIgnoreCase(clusterName, serviceTypes, recentPage));
+        if (!serviceLogs.isEmpty()) {
+            return serviceLogs;
+        }
+
+        serviceLogs.addAll(repository.findLatestByServiceTypesAfterIgnoreCase(serviceTypes, lookupStart, recentPage));
+        if (!serviceLogs.isEmpty()) {
+            return serviceLogs;
+        }
+
+        serviceLogs.addAll(repository.findLatestByServiceTypesIgnoreCase(serviceTypes, recentPage));
+        if (!serviceLogs.isEmpty()) {
+            return serviceLogs;
+        }
+
+        serviceLogs.addAll(repository.findLatestByClusterAfterIgnoreCase(clusterName, lookupStart, recentPage));
+        if (!serviceLogs.isEmpty()) {
+            return serviceLogs;
+        }
+
+        serviceLogs.addAll(repository.findLatestByClusterIgnoreCase(clusterName, recentPage));
+        return serviceLogs;
     }
 
     private List<CmServiceLogSnapshotEntity> dedupeSnapshots(List<CmServiceLogSnapshotEntity> snapshots, Instant collectedAt) {
@@ -231,10 +382,32 @@ public class CmServiceLogSnapshotService {
     }
 
     private List<String> resolveServiceTypes(String requestedServiceType) {
+        if ("HIVE_METASTORE".equals(requestedServiceType)) {
+            return Arrays.asList("HIVE_METASTORE", "HIVE", "TEZ");
+        }
         if ("HIVE_ON_TEZ".equals(requestedServiceType)) {
             return Arrays.asList("HIVE_ON_TEZ", "HIVE", "TEZ");
         }
+        if ("HIVE".equals(requestedServiceType)) {
+            return Arrays.asList("HIVE", "HIVE_ON_TEZ", "HIVE_METASTORE", "TEZ");
+        }
+        if ("IMPALA".equals(requestedServiceType)) {
+            return Arrays.asList("IMPALA", "IMPALAD", "CATALOGD", "STATESTORE");
+        }
         return Collections.singletonList(requestedServiceType);
+    }
+
+    private List<String> normalizeServiceTypes(List<String> serviceTypes) {
+        Set<String> normalized = new LinkedHashSet<String>();
+        if (serviceTypes != null) {
+            for (String serviceType : serviceTypes) {
+                String upper = safe(serviceType).toUpperCase(Locale.ROOT);
+                if (!upper.isEmpty()) {
+                    normalized.add(upper);
+                }
+            }
+        }
+        return new ArrayList<String>(normalized);
     }
 
     private String hashLogText(String logText) {

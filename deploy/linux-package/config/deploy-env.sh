@@ -28,6 +28,7 @@ GuardianCmApiVersion="v51"
 GuardianCmUsername="admin"
 GuardianCmPassword="admin"
 GuardianCmClusterName="cluster"
+GuardianCmRoleLogTimeoutMs=20000
 
 GuardianLlmEnabled=false
 GuardianLlmEndpoint="http://llm.example.local:8000/v1/chat/completions"

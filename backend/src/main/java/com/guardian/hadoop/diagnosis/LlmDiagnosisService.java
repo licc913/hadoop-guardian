@@ -105,7 +105,7 @@ public class LlmDiagnosisService {
                     );
                 }
                 logger.warn("Failed to parse LLM diagnosis JSON, falling back to plain text blueprint", parseException);
-                return LlmDiagnosisResult.success(buildPlainTextBlueprint(content, incident.getServiceType()));
+                return LlmDiagnosisResult.success(buildPlainTextBlueprint(content));
             }
         } catch (RestClientResponseException exception) {
             logger.warn("External LLM diagnosis request failed", exception);
@@ -137,12 +137,15 @@ public class LlmDiagnosisService {
         List<Map<String, String> > messages = new ArrayList<Map<String, String> >();
         messages.add(message(
             "system",
-            "你是一名资深 CDP 与 Hadoop 平台诊断专家，擅长 Cloudera Manager、角色日志、JMX、HDFS、YARN、Hive、Impala、Spark、Kafka、HBase、Ranger 与 ZooKeeper 的故障诊断。"
-                + "你必须只返回一个 JSON 对象，不要输出 Markdown、解释说明或代码块。"
+            "你是资深 CDP/Hadoop 平台故障诊断专家，擅长基于 Cloudera Manager 服务状态、角色日志和运维知识库做根因分析。"
+                + "你必须只返回一个 JSON 对象，不要输出 Markdown、解释说明、代码块或额外文本。"
                 + "JSON 字段名必须固定为：rootCause, confidence, impactLevel, crossComponentPath, recommendations, followUps, "
                 + "actionName, actionType, actionRiskLevel, actionRequiresApproval, actionRecommendationText。"
-                + "除字段名外，所有自然语言字段值必须使用简体中文，禁止输出英文结论、英文建议或中英混杂表述。"
-                + "诊断时必须优先使用当前证据，不得把历史事件当作当前事实。"
+                + "所有自然语言字段值必须使用简体中文。"
+                + "诊断必须优先基于当前服务日志，不能编造日志中不存在的现象。"
+                + "rootCause 必须写得充分，至少覆盖：现象、直接原因、关键日志证据、受影响角色或节点。"
+                + "recommendations 必须给出可执行步骤，而不是空泛建议。"
+                + "followUps 必须写待补充证据、风险提示或验证步骤。"
         ));
         messages.add(message("user", prompt));
         return messages;
@@ -161,7 +164,7 @@ public class LlmDiagnosisService {
                                        List<KnowledgeSuggestionRecord> knowledgeSuggestions,
                                        List<CmServiceLogSnapshotRecord> serviceLogs) {
         StringBuilder builder = new StringBuilder();
-        builder.append("请分析以下事件，并且只返回 JSON 对象。所有自然语言字段值必须是简体中文。\n");
+        builder.append("请分析以下诊断事件，并且只返回 JSON 对象。所有自然语言字段值必须使用简体中文。\n");
         builder.append("incidentNo: ").append(safe(incident.getIncidentNo())).append("\n");
         builder.append("serviceType: ").append(safe(incident.getServiceType())).append("\n");
         builder.append("severity: ").append(safe(incident.getSeverity())).append("\n");
@@ -172,7 +175,7 @@ public class LlmDiagnosisService {
         builder.append("owner: ").append(defaultIfBlank(incident.getOwner(), "UNKNOWN")).append("\n");
         builder.append("triggerBy: ").append(defaultIfBlank(triggerBy, "UNKNOWN")).append("\n");
         builder.append("triggerReason: ").append(defaultIfBlank(triggerReason, "manual diagnosis")).append("\n");
-        builder.append("Current service logs (highest priority):\n");
+        builder.append("Current service logs (highest priority, same as frontend display):\n");
         appendServiceLogs(builder, serviceLogs, 12, 520);
         builder.append("Evidence:\n");
         appendList(builder, incident.getEvidence(), 10, 320);
@@ -188,12 +191,13 @@ public class LlmDiagnosisService {
             }
         }
         builder.append("Requirements:\n");
-        builder.append("- Base the diagnosis on current evidence only; do not invent facts.\n");
-        builder.append("- Give highest priority to the current service logs above, especially WARN/ERROR lines and their surrounding context.\n");
-        builder.append("- Root cause must name the affected node, role, component, and the concrete failure symptom visible in the logs.\n");
-        builder.append("- Recommendations must be specific, executable, and tied to the exact component or node implicated by the logs.\n");
-        builder.append("- If the logs indicate cross-component propagation, state that path explicitly in crossComponentPath.\n");
-        builder.append("- If evidence is insufficient, say that in followUps instead of inventing facts.\n");
+        builder.append("- 只能基于当前事件证据和当前服务日志判断，不得编造事实。\n");
+        builder.append("- 最高优先级是上面的服务日志，尤其是 WARN/ERROR 及其上下文。\n");
+        builder.append("- rootCause 不能只写一句空泛结论，必须说明：发生了什么、直接原因是什么、日志里哪几条证据支持这个判断、影响到哪个节点或角色。\n");
+        builder.append("- recommendations 至少给出 3 条具体做法，按先后顺序描述，说明先做什么、再做什么、怎么验证。\n");
+        builder.append("- followUps 写待补充证据、风险提示或验证步骤，不要重复 recommendations。\n");
+        builder.append("- 只围绕当前服务日志诊断，不做跨组件推断；crossComponentPath 默认返回空字符串即可。\n");
+        builder.append("- 如果证据不足，明确指出缺什么，而不是猜测。\n");
         return builder.toString();
     }
 
@@ -207,16 +211,22 @@ public class LlmDiagnosisService {
         }
         int count = 0;
         for (CmServiceLogSnapshotRecord value : serviceLogs) {
-            builder.append("- [")
-                .append(defaultIfBlank(value.getLogType(), "LOG"))
-                .append("] ")
-                .append(truncate(defaultIfBlank(value.getLogText(), "empty"), maxItemLength))
+            builder.append("- ")
+                .append(renderServiceLogForPrompt(value, maxItemLength))
                 .append("\n");
             count++;
             if (count >= limit) {
                 break;
             }
         }
+    }
+
+    private String renderServiceLogForPrompt(CmServiceLogSnapshotRecord value, int maxItemLength) {
+        String line = "["
+            + defaultIfBlank(value.getLogType(), "LOG")
+            + "] "
+            + defaultIfBlank(value.getLogText(), "empty");
+        return truncate(line, maxItemLength);
     }
 
     private void appendList(StringBuilder builder, List<String> values, int limit, int maxItemLength) {
@@ -256,8 +266,6 @@ public class LlmDiagnosisService {
             return content;
         }
 
-        // Some OpenAI-compatible DeepSeek/Qwen gateways return the useful text
-        // in reasoning_content when max_tokens is too small or reasoning mode is enabled.
         content = extractTextValue(message.get("reasoning_content"));
         if (hasText(content)) {
             return content;
@@ -306,13 +314,13 @@ public class LlmDiagnosisService {
         JsonNode root = objectMapper.readTree(sanitized);
         String rootCause = truncate(
             readText(root, "rootCause", safe(serviceType) + " shows abnormal behavior and needs more evidence."),
-            256
+            4000
         );
         double confidence = clamp(readDouble(root, "confidence", 0.66d), 0.1d, 0.95d);
         String impactLevel = normalizeOneOf(readText(root, "impactLevel", "SEV2"), Arrays.asList("SEV1", "SEV2", "SEV3"), "SEV2");
-        String crossComponentPath = truncate(readText(root, "crossComponentPath", safe(serviceType)), 128);
-        List<String> recommendations = readTextList(root.get("recommendations"), 3, "Validate current evidence before expanding remediation scope.");
-        List<String> followUps = readTextList(root.get("followUps"), 2, "Collect more evidence and refresh the diagnosis.");
+        String crossComponentPath = truncate(readText(root, "crossComponentPath", ""), 128);
+        List<String> recommendations = readTextList(root.get("recommendations"), 5, "Validate current evidence before expanding remediation scope.");
+        List<String> followUps = readTextList(root.get("followUps"), 4, "Collect more evidence and refresh the diagnosis.");
         String actionName = truncate(readText(root, "actionName", "Generate diagnosis recommendation"), 128);
         String actionType = normalizeOneOf(
             readText(root, "actionType", "EVIDENCE_COLLECTION"),
@@ -343,7 +351,7 @@ public class LlmDiagnosisService {
         );
     }
 
-    private DiagnosisBlueprint buildPlainTextBlueprint(String content, String serviceType) {
+    private DiagnosisBlueprint buildPlainTextBlueprint(String content) {
         String normalized = defaultIfBlank(content, "Model returned no valid content.")
             .replace("\r", "\n")
             .replaceAll("\n{2,}", "\n")
@@ -357,9 +365,9 @@ public class LlmDiagnosisService {
             }
         }
 
-        String rootCause = truncate(lines.isEmpty() ? normalized : lines.get(0), 256);
+        String rootCause = truncate(normalized, 4000);
         List<String> recommendations = new ArrayList<String>();
-        for (int index = 1; index < lines.size() && recommendations.size() < 3; index++) {
+        for (int index = 0; index < lines.size() && recommendations.size() < 5; index++) {
             recommendations.add(lines.get(index));
         }
         if (recommendations.isEmpty()) {
@@ -370,9 +378,9 @@ public class LlmDiagnosisService {
             rootCause,
             0.72d,
             "SEV2",
-            safe(serviceType),
+            "",
             recommendations,
-            Arrays.asList("Collect more runtime evidence.", "If the action is risky, route it through approval."),
+            Arrays.asList("Collect more runtime evidence.", "Verify the proposed handling steps in a controlled window.", "If the action is risky, route it through approval."),
             "Review AI diagnosis result",
             "DIAGNOSTIC_COLLECTION",
             "LOW",
@@ -394,17 +402,6 @@ public class LlmDiagnosisService {
             return trimmed.substring(firstBrace, lastBrace + 1);
         }
         return trimmed;
-    }
-
-    private String summarizeResponse(Map<String, Object> response) {
-        if (response == null || response.isEmpty()) {
-            return "Empty response body.";
-        }
-        try {
-            return truncate(objectMapper.writeValueAsString(response), 500);
-        } catch (Exception ignored) {
-            return "Response body could not be serialized.";
-        }
     }
 
     private String summarizeMissingContentResponse(Map<String, Object> response) {
@@ -435,11 +432,9 @@ public class LlmDiagnosisService {
 
     private boolean looksLikeReasoningOnly(String content) {
         String normalized = safe(content).toLowerCase();
-        return (normalized.contains("json") && normalized.contains("rootcause") && normalized.contains("用户"))
-            || normalized.contains("reasoning_content")
-            || normalized.contains("用户要求")
-            || normalized.contains("必须包含以下字段")
-            || normalized.contains("事件上下文");
+        return normalized.contains("json")
+            && normalized.contains("rootcause")
+            && (normalized.contains("requirements") || normalized.contains("recommendations"));
     }
 
     private String buildHttpErrorDetails(RestClientResponseException exception) {
@@ -524,7 +519,6 @@ public class LlmDiagnosisService {
         if (configured <= 0) {
             return 0;
         }
-        // Treat the old platform default 2048 as "unlimited" for backward compatibility.
         if (configured == 2048) {
             return 0;
         }

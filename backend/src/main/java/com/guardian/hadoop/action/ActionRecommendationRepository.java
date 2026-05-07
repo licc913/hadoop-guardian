@@ -6,4 +6,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface ActionRecommendationRepository extends JpaRepository<ActionRecommendationEntity, Long> {
 
     List<ActionRecommendationEntity> findByIncident_IdOrderByCreatedAtDesc(Long incidentId);
+
+    ActionRecommendationEntity findTopByIncident_IdOrderByCreatedAtDesc(Long incidentId);
 }

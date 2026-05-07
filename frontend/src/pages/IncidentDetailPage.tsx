@@ -4,7 +4,9 @@ import { DiagnosisCard } from "../components/DiagnosisCard";
 import { SeverityBadge } from "../components/SeverityBadge";
 import {
   closeIncident,
+  createApprovalRecord,
   createDiagnosisTask,
+  createExecutionRecord,
   getActionRecommendations,
   getAiGuidance,
   getApprovalRecords,
@@ -13,7 +15,10 @@ import {
   getIncident,
   getIncidentServiceLogs,
   getKnowledgeSuggestions,
-  getPostmortem
+  getPostmortem,
+  resumeIncident,
+  savePostmortem,
+  suppressIncident
 } from "../lib/api";
 import type {
   ActionRecommendation,
@@ -125,6 +130,13 @@ function renderLogLine(item: CmServiceLogSnapshot) {
   return `[${item.logType}] ${item.logText}`;
 }
 
+function splitTextareaLines(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 export function IncidentDetailPage() {
   const { incidentId } = useParams();
   const parsedIncidentId = Number(incidentId ?? "1");
@@ -149,6 +161,16 @@ export function IncidentDetailPage() {
   const [diagnosisMode, setDiagnosisMode] = useState<DiagnosisMode>("AUTO");
   const [currentResult, setCurrentResult] = useState<DiagnosisTaskResponse | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [isSuppressing, setIsSuppressing] = useState(false);
+  const [approvalStatus, setApprovalStatus] = useState("PENDING");
+  const [approvalComment, setApprovalComment] = useState("");
+  const [executionStatus, setExecutionStatus] = useState("RUNNING");
+  const [executionSummary, setExecutionSummary] = useState("");
+  const [postmortemSummary, setPostmortemSummary] = useState("");
+  const [postmortemRootCause, setPostmortemRootCause] = useState("");
+  const [postmortemImpact, setPostmortemImpact] = useState("");
+  const [postmortemTimeline, setPostmortemTimeline] = useState("");
+  const [postmortemPrevention, setPostmortemPrevention] = useState("");
 
   const loadIncidentSignals = async () => {
     const [diagnosisResult, knowledgeResult, aiResult, serviceLogResult] = await Promise.allSettled([
@@ -194,6 +216,11 @@ export function IncidentDetailPage() {
       setApprovals(payload.approvals);
       setExecutions(payload.executions);
       setPostmortem(payload.postmortem);
+      setPostmortemSummary(payload.postmortem?.summary ?? "");
+      setPostmortemRootCause(payload.postmortem?.rootCause ?? "");
+      setPostmortemImpact(payload.postmortem?.impactStatement ?? "");
+      setPostmortemTimeline((payload.postmortem?.timeline ?? []).join("\n"));
+      setPostmortemPrevention((payload.postmortem?.preventionItems ?? []).join("\n"));
       setHistoryLoaded(true);
       return payload;
     } finally {
@@ -228,8 +255,27 @@ export function IncidentDetailPage() {
     setServiceLogs([]);
     setHistoryLoaded(false);
     setShowHistory(false);
+    setApprovalStatus("PENDING");
+    setApprovalComment("");
+    setExecutionStatus("RUNNING");
+    setExecutionSummary("");
+    setPostmortemSummary("");
+    setPostmortemRootCause("");
+    setPostmortemImpact("");
+    setPostmortemTimeline("");
+    setPostmortemPrevention("");
     void loadCoreIncidentDetail();
   }, [parsedIncidentId]);
+
+  useEffect(() => {
+    if (!incident || incident.status === "CLOSED" || serviceLogs.length > 0 || isSignalLoading) {
+      return undefined;
+    }
+    const handle = window.setTimeout(() => {
+      void refreshIncidentSignals();
+    }, 15000);
+    return () => window.clearTimeout(handle);
+  }, [incident, serviceLogs.length, isSignalLoading]);
 
   useEffect(() => {
     if (!showHistory || historyLoaded) {
@@ -243,6 +289,7 @@ export function IncidentDetailPage() {
   const signalHighlights = aiGuidance?.signalHighlights ?? [];
   const jmxInsights = aiGuidance?.jmxInsights ?? [];
   const visibleServiceLogs = useMemo(() => serviceLogs.slice(0, 12), [serviceLogs]);
+  const currentAction = useMemo(() => actions[0] ?? null, [actions]);
 
   if (loadError) return <div className="panel empty-state">{loadError}</div>;
   if (!incident) return <div className="panel">{isBootstrapping ? "正在加载事件详情..." : "未找到当前事件。"}</div>;
@@ -286,6 +333,94 @@ export function IncidentDetailPage() {
     }
   }
 
+  async function handleSuppressToggle() {
+    if (!incident) return;
+    setIsSuppressing(true);
+    setFlashMessage(null);
+    try {
+      const response = incident.governanceStatus === "SUPPRESSED"
+        ? await resumeIncident(parsedIncidentId, "Operator resumed the incident from the active queue.")
+        : await suppressIncident(parsedIncidentId, "Operator suppressed repetitive event noise for controlled triage.", 120);
+      setIncident(response.incident);
+      setFlashMessage(response.message);
+    } catch (error) {
+      setFlashMessage(error instanceof Error ? `事件治理操作失败：${error.message}` : "事件治理操作失败，请检查后端日志。");
+    } finally {
+      setIsSuppressing(false);
+    }
+  }
+
+  async function handleCreateApproval() {
+    if (!currentAction) {
+      setFlashMessage("当前没有可用的动作建议，无法新增审批记录。");
+      return;
+    }
+    try {
+      const record = await createApprovalRecord(parsedIncidentId, {
+        actionRecommendationId: currentAction.id,
+        approvalStatus,
+        requestedBy: "frontend-operator",
+        approver: approvalStatus === "PENDING" ? null : "on-duty-approver",
+        comment: approvalComment || null
+      });
+      setApprovals((current) => [...current, record].sort((left, right) => left.requestedAt.localeCompare(right.requestedAt)));
+      setFlashMessage("审批记录已写入。");
+      setApprovalComment("");
+      if (!showHistory) {
+        setShowHistory(true);
+      }
+    } catch (error) {
+      setFlashMessage(error instanceof Error ? `写入审批记录失败：${error.message}` : "写入审批记录失败。");
+    }
+  }
+
+  async function handleCreateExecution() {
+    if (!currentAction) {
+      setFlashMessage("当前没有可用的动作建议，无法新增执行记录。");
+      return;
+    }
+    try {
+      const record = await createExecutionRecord(parsedIncidentId, {
+        actionRecommendationId: currentAction.id,
+        executionStatus,
+        executor: "frontend-operator",
+        executionSummary: executionSummary || "Execution record created from incident detail page."
+      });
+      setExecutions((current) => [...current, record].sort((left, right) => left.startedAt.localeCompare(right.startedAt)));
+      setFlashMessage("执行记录已写入。");
+      setExecutionSummary("");
+      if (!showHistory) {
+        setShowHistory(true);
+      }
+    } catch (error) {
+      setFlashMessage(error instanceof Error ? `写入执行记录失败：${error.message}` : "写入执行记录失败。");
+    }
+  }
+
+  async function handleSavePostmortem() {
+    try {
+      const record = await savePostmortem(parsedIncidentId, {
+        summary: postmortemSummary,
+        rootCause: postmortemRootCause,
+        impactStatement: postmortemImpact,
+        timeline: splitTextareaLines(postmortemTimeline),
+        preventionItems: splitTextareaLines(postmortemPrevention)
+      });
+      setPostmortem(record);
+      setPostmortemSummary(record.summary);
+      setPostmortemRootCause(record.rootCause);
+      setPostmortemImpact(record.impactStatement);
+      setPostmortemTimeline((record.timeline ?? []).join("\n"));
+      setPostmortemPrevention((record.preventionItems ?? []).join("\n"));
+      setFlashMessage("复盘记录已保存。");
+      if (!showHistory) {
+        setShowHistory(true);
+      }
+    } catch (error) {
+      setFlashMessage(error instanceof Error ? `保存复盘记录失败：${error.message}` : "保存复盘记录失败。");
+    }
+  }
+
   return (
     <div className="page-section">
       <section className="panel">
@@ -306,9 +441,14 @@ export function IncidentDetailPage() {
           <span>{`集群：${incident.clusterName}`}</span>
           <span>{`服务：${serviceLabelMap[incident.serviceType] ?? incident.serviceType}`}</span>
           <span>{`状态：${statusLabelMap[incident.status] ?? incident.status}`}</span>
+          <span>{`治理状态：${incident.governanceStatus || "ACTIVE"}`}</span>
+          <span>{`出现次数：${incident.occurrenceCount ?? 1}`}</span>
           <span>{`责任人：${incident.owner || "未分配"}`}</span>
           <span>{`发生时间：${formatTime(incident.occurredAt)}`}</span>
+          {incident.lastSeenAt ? <span>{`最近采集：${formatTime(incident.lastSeenAt)}`}</span> : null}
+          {incident.suppressedUntil ? <span>{`抑制到：${formatTime(incident.suppressedUntil)}`}</span> : null}
         </div>
+        {incident.governanceNote ? <p className="muted">{incident.governanceNote}</p> : null}
 
         <div className="two-column-section">
           <section className="subpanel">
@@ -335,6 +475,11 @@ export function IncidentDetailPage() {
           </div>
           <div className="detail-actions">
             <Link to="/incidents" className="button button-secondary">返回事件列表</Link>
+            {incident.status !== "CLOSED" ? (
+              <button className="button button-secondary" disabled={isSuppressing} type="button" onClick={() => void handleSuppressToggle()}>
+                {isSuppressing ? "处理中..." : incident.governanceStatus === "SUPPRESSED" ? "恢复事件" : "抑制事件"}
+              </button>
+            ) : null}
             {incident.status !== "CLOSED" ? (
               <button className="button button-secondary" disabled={isClosing} type="button" onClick={() => void handleCloseIncident()}>
                 {isClosing ? "关闭中..." : "关闭事件"}
@@ -409,7 +554,6 @@ export function IncidentDetailPage() {
               <p className="lead">{currentDiagnosis.rootCause}</p>
               <div className="inline-metadata">
                 <span>{`影响等级：${currentDiagnosis.impactLevel}`}</span>
-                <span>{`跨组件路径：${currentDiagnosis.crossComponentPath}`}</span>
                 <span>{`置信度：${Math.round(currentDiagnosis.confidence * 100)}%`}</span>
               </div>
               {currentDiagnosis.recommendations.length > 0 ? (
@@ -568,6 +712,28 @@ export function IncidentDetailPage() {
                   ))}
                 </ul>
               )}
+              <div className="stack-sm">
+                <strong>新增审批记录</strong>
+                <div className="form-grid">
+                  <label>
+                    <span>审批状态</span>
+                    <select value={approvalStatus} onChange={(event) => setApprovalStatus(event.target.value)}>
+                      <option value="PENDING">PENDING</option>
+                      <option value="APPROVED">APPROVED</option>
+                      <option value="REJECTED">REJECTED</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>审批备注</span>
+                    <input value={approvalComment} onChange={(event) => setApprovalComment(event.target.value)} placeholder="补充审批意见" />
+                  </label>
+                </div>
+                <div className="toolbar">
+                  <button className="button button-secondary" type="button" onClick={() => void handleCreateApproval()}>
+                    保存审批记录
+                  </button>
+                </div>
+              </div>
             </section>
 
             <section className="panel">
@@ -597,6 +763,28 @@ export function IncidentDetailPage() {
                   ))}
                 </ul>
               )}
+              <div className="stack-sm">
+                <strong>新增执行记录</strong>
+                <div className="form-grid">
+                  <label>
+                    <span>执行状态</span>
+                    <select value={executionStatus} onChange={(event) => setExecutionStatus(event.target.value)}>
+                      <option value="RUNNING">RUNNING</option>
+                      <option value="SUCCESS">SUCCESS</option>
+                      <option value="FAILED">FAILED</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>执行摘要</span>
+                    <input value={executionSummary} onChange={(event) => setExecutionSummary(event.target.value)} placeholder="记录执行动作和结果" />
+                  </label>
+                </div>
+                <div className="toolbar">
+                  <button className="button button-secondary" type="button" onClick={() => void handleCreateExecution()}>
+                    保存执行记录
+                  </button>
+                </div>
+              </div>
             </section>
           </div>
 
@@ -609,25 +797,59 @@ export function IncidentDetailPage() {
             </div>
             {isHistoryLoading ? (
               <div className="empty-state">正在加载复盘记录...</div>
-            ) : !postmortem ? (
-              <div className="empty-state">当前还没有复盘记录。</div>
             ) : (
               <div className="stack-md">
-                <p><strong>总结：</strong>{postmortem.summary}</p>
-                <p><strong>根因：</strong>{postmortem.rootCause}</p>
-                <p><strong>影响：</strong>{postmortem.impactStatement}</p>
-                {postmortem.timeline.length > 0 ? (
+                {!postmortem ? (
+                  <div className="empty-state">当前还没有复盘记录。</div>
+                ) : (
+                  <>
+                    <p><strong>总结：</strong>{postmortem.summary}</p>
+                    <p><strong>根因：</strong>{postmortem.rootCause}</p>
+                    <p><strong>影响：</strong>{postmortem.impactStatement}</p>
+                  </>
+                )}
+                {postmortem && postmortem.timeline.length > 0 ? (
                   <>
                     <strong>时间线</strong>
                     <ul className="list">{postmortem.timeline.map((item) => <li key={item}>{item}</li>)}</ul>
                   </>
                 ) : null}
-                {postmortem.preventionItems.length > 0 ? (
+                {postmortem && postmortem.preventionItems.length > 0 ? (
                   <>
                     <strong>预防项</strong>
                     <ul className="list">{postmortem.preventionItems.map((item) => <li key={item}>{item}</li>)}</ul>
                   </>
                 ) : null}
+                <div className="stack-sm">
+                  <strong>编辑复盘记录</strong>
+                  <label>
+                    <span className="muted">总结</span>
+                    <textarea className="app-textarea" value={postmortemSummary} onChange={(event) => setPostmortemSummary(event.target.value)} />
+                  </label>
+                  <label>
+                    <span className="muted">根因</span>
+                    <textarea className="app-textarea" value={postmortemRootCause} onChange={(event) => setPostmortemRootCause(event.target.value)} />
+                  </label>
+                  <label>
+                    <span className="muted">影响说明</span>
+                    <textarea className="app-textarea" value={postmortemImpact} onChange={(event) => setPostmortemImpact(event.target.value)} />
+                  </label>
+                  <div className="form-grid">
+                    <label>
+                      <span>时间线</span>
+                      <textarea className="app-textarea" value={postmortemTimeline} onChange={(event) => setPostmortemTimeline(event.target.value)} placeholder="每行一条" />
+                    </label>
+                    <label>
+                      <span>预防项</span>
+                      <textarea className="app-textarea" value={postmortemPrevention} onChange={(event) => setPostmortemPrevention(event.target.value)} placeholder="每行一条" />
+                    </label>
+                  </div>
+                  <div className="toolbar">
+                    <button className="button button-secondary" type="button" onClick={() => void handleSavePostmortem()}>
+                      保存复盘记录
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
           </section>

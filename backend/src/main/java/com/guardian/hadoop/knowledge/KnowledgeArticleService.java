@@ -21,7 +21,19 @@ public class KnowledgeArticleService {
     }
 
     public List<KnowledgeArticleRecord> listArticles() {
+        return listArticles(null);
+    }
+
+    public List<KnowledgeArticleRecord> listArticles(List<String> domains) {
+        Set<String> domainSet = domains == null
+            ? Collections.emptySet()
+            : domains.stream()
+                .filter(value -> value != null && !value.trim().isEmpty())
+                .map(value -> value.trim().toUpperCase(Locale.ROOT))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
         return repository.findAll().stream()
+            .filter(entity -> domainSet.isEmpty() || domainSet.contains(safe(entity.getDomain()).toUpperCase(Locale.ROOT)))
             .sorted((left, right) -> {
                 Instant rightInstant = right.getUpdatedAt() != null ? right.getUpdatedAt() : right.getCreatedAt();
                 Instant leftInstant = left.getUpdatedAt() != null ? left.getUpdatedAt() : left.getCreatedAt();
@@ -90,6 +102,10 @@ public class KnowledgeArticleService {
 
     private String normalizeDomain(String value) {
         return value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value.trim();
     }
 
     private String normalizeContent(String value) {

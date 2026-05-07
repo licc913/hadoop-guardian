@@ -2,9 +2,11 @@ import type {
   ActionRecommendation,
   AiGuidance,
   ApprovalRecord,
+  ApprovalRecordCreateRequest,
   ClouderaManagerSettings,
   ClouderaManagerSyncResponse,
   ClusterInspectionReport,
+  CrossComponentAnalysis,
   CmCurrentStatusResponse,
   CmServiceLogSnapshot,
   CurrentUser,
@@ -14,8 +16,10 @@ import type {
   DiagnosisMode,
   DiagnosisTaskResponse,
   ExecutionRecord,
+  ExecutionRecordCreateRequest,
   Incident,
   IncidentCloseResponse,
+  IncidentGovernanceResponse,
   IntegrationTestResponse,
   JmxProbeResponse,
   KnowledgeArticle,
@@ -24,7 +28,13 @@ import type {
   KnowledgeSuggestion,
   LlmChatMessage,
   LlmPromptResponse,
+  ParameterOptimizationContextPreview,
+  ParameterOptimizationRequest,
+  ParameterOptimizationResult,
   PostmortemRecord,
+  PostmortemUpsertRequest,
+  SqlOptimizationRequest,
+  SqlOptimizationResult,
   SystemStatus
 } from "./types";
 
@@ -126,6 +136,21 @@ export function closeIncident(incidentId: number, closeReason: string): Promise<
   });
 }
 
+export function suppressIncident(incidentId: number, note: string, suppressMinutes = 120): Promise<IncidentGovernanceResponse> {
+  return writeJson(`/incidents/${incidentId}/suppress`, "POST", {
+    operator: "frontend-operator",
+    note,
+    suppressMinutes
+  });
+}
+
+export function resumeIncident(incidentId: number, note: string): Promise<IncidentGovernanceResponse> {
+  return writeJson(`/incidents/${incidentId}/resume`, "POST", {
+    operator: "frontend-operator",
+    note
+  });
+}
+
 export function getDiagnoses(incidentId: number): Promise<Diagnosis[]> {
   return readJson(`/incidents/${incidentId}/diagnoses`);
 }
@@ -146,12 +171,24 @@ export function getApprovalRecords(incidentId: number): Promise<ApprovalRecord[]
   return readJson(`/incidents/${incidentId}/approvals`);
 }
 
+export function createApprovalRecord(incidentId: number, payload: ApprovalRecordCreateRequest): Promise<ApprovalRecord> {
+  return writeJson(`/incidents/${incidentId}/approvals`, "POST", payload);
+}
+
 export function getExecutionRecords(incidentId: number): Promise<ExecutionRecord[]> {
   return readJson(`/incidents/${incidentId}/executions`);
 }
 
+export function createExecutionRecord(incidentId: number, payload: ExecutionRecordCreateRequest): Promise<ExecutionRecord> {
+  return writeJson(`/incidents/${incidentId}/executions`, "POST", payload);
+}
+
 export function getPostmortem(incidentId: number): Promise<PostmortemRecord> {
   return readJson(`/incidents/${incidentId}/postmortem`);
+}
+
+export function savePostmortem(incidentId: number, payload: PostmortemUpsertRequest): Promise<PostmortemRecord> {
+  return writeJson(`/incidents/${incidentId}/postmortem`, "POST", payload);
 }
 
 export function createDiagnosisTask(
@@ -179,6 +216,10 @@ export function getClouderaManagerCurrentLogs(): Promise<CmServiceLogSnapshot[]>
 
 export function getIncidentServiceLogs(incidentId: number): Promise<CmServiceLogSnapshot[]> {
   return readJson(`/incidents/${incidentId}/service-logs`);
+}
+
+export function getCrossComponentAnalysis(incidentId: number): Promise<CrossComponentAnalysis> {
+  return readJson(`/incidents/${incidentId}/cross-component-analysis`);
 }
 
 async function writeJsonWithTimeout<T>(path: string, method: string, timeoutMs: number, payload?: unknown): Promise<T> {
@@ -229,8 +270,11 @@ export function testDiagnosticScripts(): Promise<IntegrationTestResponse> {
   return writeJson("/integrations/datasources/scripts/test", "POST");
 }
 
-export function getKnowledgeArticles(): Promise<KnowledgeArticle[]> {
-  return readJson("/knowledge/articles");
+export function getKnowledgeArticles(domains?: string[]): Promise<KnowledgeArticle[]> {
+  const query = domains && domains.length > 0
+    ? `?domains=${encodeURIComponent(domains.join(","))}`
+    : "";
+  return readJson(`/knowledge/articles${query}`);
 }
 
 export function saveKnowledgeArticle(payload: KnowledgeArticleRequest): Promise<KnowledgeArticle> {
@@ -251,6 +295,34 @@ export function getClusterInspectionReport(reportId: number): Promise<ClusterIns
 
 export function createClusterInspectionReport(triggeredBy = "frontend-operator"): Promise<ClusterInspectionReport> {
   return writeJson("/inspections", "POST", { triggeredBy });
+}
+
+export function getSqlOptimizationHistory(): Promise<SqlOptimizationResult[]> {
+  return readJson("/sql-optimization/history");
+}
+
+export function getSqlOptimizationResult(recordId: number): Promise<SqlOptimizationResult> {
+  return readJson(`/sql-optimization/${recordId}`);
+}
+
+export function analyzeSqlOptimization(payload: SqlOptimizationRequest): Promise<SqlOptimizationResult> {
+  return writeJsonWithTimeout("/sql-optimization/analyze", "POST", 240000, payload);
+}
+
+export function getParameterOptimizationHistory(): Promise<ParameterOptimizationResult[]> {
+  return readJson("/parameter-optimization/history");
+}
+
+export function getParameterOptimizationResult(recordId: number): Promise<ParameterOptimizationResult> {
+  return readJson(`/parameter-optimization/${recordId}`);
+}
+
+export function getParameterOptimizationContext(serviceType: string): Promise<ParameterOptimizationContextPreview> {
+  return readJson(`/parameter-optimization/context?serviceType=${encodeURIComponent(serviceType)}`);
+}
+
+export function analyzeParameterOptimization(payload: ParameterOptimizationRequest): Promise<ParameterOptimizationResult> {
+  return writeJsonWithTimeout("/parameter-optimization/analyze", "POST", 180000, payload);
 }
 
 export async function downloadClusterInspectionReportDocx(reportId: number): Promise<Blob> {

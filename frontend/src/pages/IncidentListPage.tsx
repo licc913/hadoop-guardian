@@ -222,6 +222,14 @@ export function IncidentListPage() {
               <span>{`数据库：${systemStatus?.databaseMode ?? "-"}`}</span>
               <span>{`CM：${systemStatus?.clouderaManagerEnabled ? "已启用" : "未启用"}`}</span>
               <span>{`实时队列：${systemStatus?.incidentCount ?? incidents.length}`}</span>
+              <span>{`抑制中：${systemStatus?.suppressedIncidentCount ?? 0}`}</span>
+              <span>{`巡检运行中：${systemStatus?.inspectionRunningCount ?? 0}`}</span>
+              <span>{`巡检失败：${systemStatus?.inspectionFailedCount ?? 0}`}</span>
+            </div>
+            <div className="stack-sm">
+              <span className="muted">{`CM 最近采集：${systemStatus?.lastCmCollectionAt ? formatTime(systemStatus.lastCmCollectionAt) : "未记录"}`}</span>
+              <span className="muted">{systemStatus?.lastCmCollectionMessage || "尚未记录 CM 采集状态"}</span>
+              <span className="muted">{systemStatus?.lastInspectionMessage || "尚未记录巡检任务状态"}</span>
             </div>
           </div>
 

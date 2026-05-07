@@ -7,7 +7,9 @@ import { IncidentListPage } from "./pages/IncidentListPage";
 import { InspectionPage } from "./pages/InspectionPage";
 import { LlmConsolePage } from "./pages/LlmConsolePage";
 import { LoginPage } from "./pages/LoginPage";
+import { ParameterOptimizationPage } from "./pages/ParameterOptimizationPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { SqlOptimizationPage } from "./pages/SqlOptimizationPage";
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
@@ -81,11 +83,27 @@ export default function App() {
               <span className="nav-copy">开启独立会话，连续追问 SQL、排障、脚本和工具开发问题。</span>
             </span>
           </NavLink>
-          <NavLink className="nav-link" to="/inspections">
+
+          <NavLink className="nav-link" to="/sql-optimization">
             <span className="nav-index">04</span>
+            <span className="nav-body">
+              <span className="nav-title">SQL 优化中心</span>
+              <span className="nav-copy">独立处理 Impala SQL 与 Hive SQL 优化，支持规则扫描、大模型改写和历史追溯。</span>
+            </span>
+          </NavLink>
+
+          <NavLink className="nav-link" to="/inspections">
+            <span className="nav-index">05</span>
             <span className="nav-body">
               <span className="nav-title">巡检报告中心</span>
               <span className="nav-copy">汇总当前集群状态、日志、事件与知识库证据，生成并导出 DOCX 巡检报告。</span>
+            </span>
+          </NavLink>
+          <NavLink className="nav-link" to="/parameter-optimization">
+            <span className="nav-index">06</span>
+            <span className="nav-body">
+              <span className="nav-title">参数优化中心</span>
+              <span className="nav-copy">采集当前组件配置、版本、日志与知识依据，输出 HDFS、YARN、Hive on Tez 与 Impala 的参数优化建议。</span>
             </span>
           </NavLink>
         </nav>
@@ -125,7 +143,9 @@ export default function App() {
             <Route path="/" element={<IncidentListPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/llm-console" element={<LlmConsolePage />} />
+            <Route path="/sql-optimization" element={<SqlOptimizationPage />} />
             <Route path="/inspections" element={<InspectionPage />} />
+            <Route path="/parameter-optimization" element={<ParameterOptimizationPage />} />
             <Route path="/incidents/:incidentId" element={<IncidentDetailPage />} />
           </Routes>
         </div>

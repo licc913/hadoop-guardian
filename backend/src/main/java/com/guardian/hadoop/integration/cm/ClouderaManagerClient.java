@@ -3,11 +3,14 @@ package com.guardian.hadoop.integration.cm;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.List;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
@@ -15,6 +18,10 @@ import org.springframework.web.util.UriUtils;
 
 @Component
 public class ClouderaManagerClient {
+
+    private static final int DEFAULT_ROLE_LOG_TAIL_BYTES = 32 * 1024;
+    private static final int DEFAULT_ALERT_SYNC_TIMEOUT_MS = 120000;
+    private static final int DEFAULT_ALERT_SYNC_LIMIT = 100;
 
     private final RestTemplate restTemplate;
 
@@ -28,7 +35,7 @@ public class ClouderaManagerClient {
 
     public ApiAlertsResponse fetchAlerts(ClouderaManagerSettingsEntity settings, String apiVersion) {
         String path = buildAlertsEndpoint(settings, apiVersion);
-        ResponseEntity<ApiAlertsResponse> response = restTemplate.exchange(
+        ResponseEntity<ApiAlertsResponse> response = customTimeoutRestTemplate(Integer.valueOf(DEFAULT_ALERT_SYNC_TIMEOUT_MS)).exchange(
             path,
             HttpMethod.GET,
             buildRequest(settings),
@@ -110,14 +117,154 @@ public class ClouderaManagerClient {
     }
 
     public String fetchRoleFullLog(ClouderaManagerSettingsEntity settings, String serviceName, String roleName, String apiVersion) {
-        String path = buildRoleFullLogEndpoint(settings, serviceName, roleName, apiVersion);
-        ResponseEntity<String> response = restTemplate.exchange(
-            path,
-            HttpMethod.GET,
-            buildPlainTextRequest(settings),
-            String.class
-        );
-        return response.getBody();
+        return fetchRoleFullLog(settings, serviceName, roleName, apiVersion, null);
+    }
+
+    public String fetchRoleFullLog(ClouderaManagerSettingsEntity settings,
+                                   String serviceName,
+                                   String roleName,
+                                   String apiVersion,
+                                   Integer readTimeoutMsOverride) {
+        RestTemplate roleLogTemplate = roleLogRestTemplate(readTimeoutMsOverride);
+        List<LogEndpointCandidate> candidates = buildRoleLogCandidates(settings, serviceName, roleName, apiVersion);
+        HttpStatusCodeException lastHttpStatusException = null;
+        Exception lastException = null;
+        for (LogEndpointCandidate candidate : candidates) {
+            try {
+                ResponseEntity<String> response = roleLogTemplate.exchange(
+                    candidate.path,
+                    HttpMethod.GET,
+                    candidate.tailBytes == null
+                        ? buildPlainTextRequest(settings)
+                        : buildPlainTextRequest(settings, candidate.tailBytes),
+                    String.class
+                );
+                return response.getBody();
+            } catch (HttpStatusCodeException exception) {
+                lastHttpStatusException = exception;
+                if (!isRetriableRoleLogStatus(exception)) {
+                    throw exception;
+                }
+            } catch (Exception exception) {
+                lastException = exception;
+            }
+        }
+        if (lastHttpStatusException != null) {
+            throw lastHttpStatusException;
+        }
+        if (lastException instanceof RuntimeException) {
+            throw (RuntimeException) lastException;
+        }
+        if (lastException != null) {
+            throw new IllegalStateException("Failed to fetch CM role log", lastException);
+        }
+        throw new IllegalStateException("No CM role log endpoint candidates available");
+    }
+
+    public JsonNode fetchServiceConfig(ClouderaManagerSettingsEntity settings, String serviceName) {
+        return fetchServiceConfig(settings, serviceName, resolveApiVersion(settings));
+    }
+
+    public JsonNode fetchServiceConfig(ClouderaManagerSettingsEntity settings, String serviceName, String apiVersion) {
+        String clusterName = resolveClusterPathName(settings, apiVersion);
+        String path = buildServiceConfigEndpoint(settings, serviceName, apiVersion, clusterName);
+        try {
+            ResponseEntity<JsonNode> response = restTemplate.exchange(
+                path,
+                HttpMethod.GET,
+                buildRequest(settings),
+                JsonNode.class
+            );
+            return response.getBody();
+        } catch (HttpStatusCodeException exception) {
+            if (exception.getRawStatusCode() == 404 || exception.getRawStatusCode() == 500) {
+                String fallbackPath = String.format("%s/api/%s/clusters/%s/services/%s/config",
+                    trimTrailingSlash(settings.getBaseUrl()),
+                    safe(apiVersion),
+                    encodeSegment(clusterName),
+                    encodeSegment(serviceName));
+                ResponseEntity<JsonNode> fallbackResponse = restTemplate.exchange(
+                    fallbackPath,
+                    HttpMethod.GET,
+                    buildRequest(settings),
+                    JsonNode.class
+                );
+                return fallbackResponse.getBody();
+            }
+            throw exception;
+        }
+    }
+
+    public JsonNode fetchRoleConfigGroups(ClouderaManagerSettingsEntity settings, String serviceName) {
+        return fetchRoleConfigGroups(settings, serviceName, resolveApiVersion(settings));
+    }
+
+    public JsonNode fetchRoleConfigGroups(ClouderaManagerSettingsEntity settings, String serviceName, String apiVersion) {
+        String clusterName = resolveClusterPathName(settings, apiVersion);
+        String path = buildRoleConfigGroupsEndpoint(settings, serviceName, apiVersion, clusterName);
+        try {
+            ResponseEntity<JsonNode> response = restTemplate.exchange(
+                path,
+                HttpMethod.GET,
+                buildRequest(settings),
+                JsonNode.class
+            );
+            return response.getBody();
+        } catch (HttpStatusCodeException exception) {
+            if (exception.getRawStatusCode() == 404 || exception.getRawStatusCode() == 500) {
+                String fallbackPath = String.format("%s/api/%s/clusters/%s/services/%s/roleConfigGroups",
+                    trimTrailingSlash(settings.getBaseUrl()),
+                    safe(apiVersion),
+                    encodeSegment(clusterName),
+                    encodeSegment(serviceName));
+                ResponseEntity<JsonNode> fallbackResponse = restTemplate.exchange(
+                    fallbackPath,
+                    HttpMethod.GET,
+                    buildRequest(settings),
+                    JsonNode.class
+                );
+                return fallbackResponse.getBody();
+            }
+            throw exception;
+        }
+    }
+
+    public JsonNode fetchRoleConfigGroupConfig(ClouderaManagerSettingsEntity settings, String serviceName, String roleConfigGroupName) {
+        return fetchRoleConfigGroupConfig(settings, serviceName, roleConfigGroupName, resolveApiVersion(settings));
+    }
+
+    public JsonNode fetchRoleConfigGroupConfig(ClouderaManagerSettingsEntity settings,
+                                               String serviceName,
+                                               String roleConfigGroupName,
+                                               String apiVersion) {
+        String clusterName = resolveClusterPathName(settings, apiVersion);
+        String path = buildRoleConfigGroupConfigEndpoint(settings, serviceName, roleConfigGroupName, apiVersion, clusterName);
+        try {
+            ResponseEntity<JsonNode> response = restTemplate.exchange(
+                path,
+                HttpMethod.GET,
+                buildRequest(settings),
+                JsonNode.class
+            );
+            return response.getBody();
+        } catch (HttpStatusCodeException exception) {
+            if (exception.getRawStatusCode() == 404 || exception.getRawStatusCode() == 500) {
+                String fallbackPath = String.format("%s/api/%s/clusters/%s/services/%s/roleConfigGroups/%s/config",
+                    trimTrailingSlash(settings.getBaseUrl()),
+                    safe(apiVersion),
+                    encodeSegment(clusterName),
+                    encodeSegment(serviceName),
+                    encodeSegment(roleConfigGroupName));
+                ResponseEntity<JsonNode> fallbackResponse = restTemplate.exchange(
+                    fallbackPath,
+                    HttpMethod.GET,
+                    buildRequest(settings),
+                    JsonNode.class
+                );
+                return fallbackResponse.getBody();
+            }
+            throw exception;
+        }
     }
 
     public JsonNode fetchClusters(ClouderaManagerSettingsEntity settings, String apiVersion) {
@@ -138,9 +285,10 @@ public class ClouderaManagerClient {
     }
 
     public String buildAlertsEndpoint(ClouderaManagerSettingsEntity settings, String apiVersion) {
-        return String.format("%s/api/%s/events?query=alert==true",
+        return String.format("%s/api/%s/events?query=alert==true&limit=%d",
             trimTrailingSlash(settings.getBaseUrl()),
-            safe(apiVersion));
+            safe(apiVersion),
+            DEFAULT_ALERT_SYNC_LIMIT);
     }
 
     public String buildServicesEndpoint(ClouderaManagerSettingsEntity settings) {
@@ -182,6 +330,25 @@ public class ClouderaManagerClient {
         return buildRoleFullLogEndpoint(settings, serviceName, roleName, apiVersion, resolveClusterPathName(settings, apiVersion));
     }
 
+    public String buildServiceConfigEndpoint(ClouderaManagerSettingsEntity settings, String serviceName) {
+        return buildServiceConfigEndpoint(settings, serviceName, resolveApiVersion(settings));
+    }
+
+    public String buildServiceConfigEndpoint(ClouderaManagerSettingsEntity settings, String serviceName, String apiVersion) {
+        return buildServiceConfigEndpoint(settings, serviceName, apiVersion, resolveClusterPathName(settings, apiVersion));
+    }
+
+    public String buildServiceConfigEndpoint(ClouderaManagerSettingsEntity settings,
+                                             String serviceName,
+                                             String apiVersion,
+                                             String clusterName) {
+        return String.format("%s/api/%s/clusters/%s/services/%s/config?view=full",
+            trimTrailingSlash(settings.getBaseUrl()),
+            safe(apiVersion),
+            encodeSegment(clusterName),
+            encodeSegment(serviceName));
+    }
+
     public String buildRoleFullLogEndpoint(ClouderaManagerSettingsEntity settings,
                                            String serviceName,
                                            String roleName,
@@ -193,6 +360,45 @@ public class ClouderaManagerClient {
             encodeSegment(clusterName),
             encodeSegment(serviceName),
             encodeSegment(roleName));
+    }
+
+    public String buildRoleLogEndpoint(ClouderaManagerSettingsEntity settings,
+                                       String serviceName,
+                                       String roleName,
+                                       String apiVersion,
+                                       String clusterName,
+                                       String logPath) {
+        return String.format("%s/api/%s/clusters/%s/services/%s/roles/%s/logs/%s",
+            trimTrailingSlash(settings.getBaseUrl()),
+            safe(apiVersion),
+            encodeSegment(clusterName),
+            encodeSegment(serviceName),
+            encodeSegment(roleName),
+            encodeSegment(logPath));
+    }
+
+    public String buildRoleConfigGroupsEndpoint(ClouderaManagerSettingsEntity settings,
+                                                String serviceName,
+                                                String apiVersion,
+                                                String clusterName) {
+        return String.format("%s/api/%s/clusters/%s/services/%s/roleConfigGroups?view=full",
+            trimTrailingSlash(settings.getBaseUrl()),
+            safe(apiVersion),
+            encodeSegment(clusterName),
+            encodeSegment(serviceName));
+    }
+
+    public String buildRoleConfigGroupConfigEndpoint(ClouderaManagerSettingsEntity settings,
+                                                     String serviceName,
+                                                     String roleConfigGroupName,
+                                                     String apiVersion,
+                                                     String clusterName) {
+        return String.format("%s/api/%s/clusters/%s/services/%s/roleConfigGroups/%s/config?view=full",
+            trimTrailingSlash(settings.getBaseUrl()),
+            safe(apiVersion),
+            encodeSegment(clusterName),
+            encodeSegment(serviceName),
+            encodeSegment(roleConfigGroupName));
     }
 
     public String resolveApiVersion(ClouderaManagerSettingsEntity settings) {
@@ -274,10 +480,31 @@ public class ClouderaManagerClient {
     }
 
     private HttpEntity<Void> buildPlainTextRequest(ClouderaManagerSettingsEntity settings) {
+        return buildPlainTextRequest(settings, null);
+    }
+
+    private HttpEntity<Void> buildPlainTextRequest(ClouderaManagerSettingsEntity settings, Integer tailBytes) {
         HttpHeaders headers = new HttpHeaders();
         headers.setAccept(Collections.singletonList(MediaType.TEXT_PLAIN));
         headers.setBasicAuth(settings.getUsername(), settings.getPassword(), StandardCharsets.UTF_8);
+        if (tailBytes != null && tailBytes.intValue() > 0) {
+            headers.set(HttpHeaders.RANGE, "bytes=-" + tailBytes.intValue());
+        }
         return new HttpEntity<Void>(headers);
+    }
+
+    private RestTemplate roleLogRestTemplate(Integer readTimeoutMsOverride) {
+        if (readTimeoutMsOverride == null || readTimeoutMsOverride.intValue() <= 0) {
+            return restTemplate;
+        }
+        return customTimeoutRestTemplate(readTimeoutMsOverride);
+    }
+
+    private RestTemplate customTimeoutRestTemplate(Integer timeoutMs) {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(timeoutMs.intValue());
+        factory.setReadTimeout(timeoutMs.intValue());
+        return new RestTemplate(factory);
     }
 
     private String trimTrailingSlash(String value) {
@@ -339,5 +566,57 @@ public class ClouderaManagerClient {
         return safe(value)
             .toLowerCase()
             .replaceAll("[\\s_\\-]", "");
+    }
+
+    private boolean isRetriableRoleLogStatus(HttpStatusCodeException exception) {
+        HttpStatus status = exception.getStatusCode();
+        return status == HttpStatus.BAD_REQUEST
+            || status == HttpStatus.NOT_FOUND
+            || status == HttpStatus.METHOD_NOT_ALLOWED
+            || status == HttpStatus.INTERNAL_SERVER_ERROR
+            || status == HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE;
+    }
+
+    private List<LogEndpointCandidate> buildRoleLogCandidates(ClouderaManagerSettingsEntity settings,
+                                                              String serviceName,
+                                                              String roleName,
+                                                              String apiVersion) {
+        String clusterName = resolveClusterPathName(settings, apiVersion);
+        List<LogEndpointCandidate> candidates = new java.util.ArrayList<LogEndpointCandidate>();
+        candidates.add(new LogEndpointCandidate(
+            buildRoleFullLogEndpoint(settings, serviceName, roleName, apiVersion, clusterName),
+            null
+        ));
+        candidates.add(new LogEndpointCandidate(
+            buildRoleLogEndpoint(settings, serviceName, roleName, apiVersion, clusterName, "stderr"),
+            null
+        ));
+        candidates.add(new LogEndpointCandidate(
+            buildRoleLogEndpoint(settings, serviceName, roleName, apiVersion, clusterName, "stdout"),
+            null
+        ));
+        candidates.add(new LogEndpointCandidate(
+            buildRoleFullLogEndpoint(settings, serviceName, roleName, apiVersion, clusterName),
+            Integer.valueOf(DEFAULT_ROLE_LOG_TAIL_BYTES)
+        ));
+        candidates.add(new LogEndpointCandidate(
+            buildRoleLogEndpoint(settings, serviceName, roleName, apiVersion, clusterName, "stderr"),
+            Integer.valueOf(DEFAULT_ROLE_LOG_TAIL_BYTES)
+        ));
+        candidates.add(new LogEndpointCandidate(
+            buildRoleLogEndpoint(settings, serviceName, roleName, apiVersion, clusterName, "stdout"),
+            Integer.valueOf(DEFAULT_ROLE_LOG_TAIL_BYTES)
+        ));
+        return candidates;
+    }
+
+    private static final class LogEndpointCandidate {
+        private final String path;
+        private final Integer tailBytes;
+
+        private LogEndpointCandidate(String path, Integer tailBytes) {
+            this.path = path;
+            this.tailBytes = tailBytes;
+        }
     }
 }

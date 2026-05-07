@@ -32,7 +32,7 @@ public class DiagnosisEntity {
     @Column(nullable = false, length = 64)
     private String subsystem;
 
-    @Column(name = "root_cause", nullable = false, length = 256)
+    @Column(name = "root_cause", nullable = false, columnDefinition = "TEXT")
     private String rootCause;
 
     @Column(nullable = false)

@@ -1,5 +1,6 @@
 package com.guardian.hadoop.inspection;
 
+import com.guardian.hadoop.shared.PlatformRuntimeStatusService;
 import java.time.Instant;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Async;
@@ -11,11 +12,14 @@ public class ClusterInspectionJobService {
 
     private final ClusterInspectionReportRepository repository;
     private final ClusterInspectionService inspectionService;
+    private final PlatformRuntimeStatusService runtimeStatusService;
 
     public ClusterInspectionJobService(ClusterInspectionReportRepository repository,
-                                       @Lazy ClusterInspectionService inspectionService) {
+                                       @Lazy ClusterInspectionService inspectionService,
+                                       PlatformRuntimeStatusService runtimeStatusService) {
         this.repository = repository;
         this.inspectionService = inspectionService;
+        this.runtimeStatusService = runtimeStatusService;
     }
 
     @Async
@@ -26,9 +30,12 @@ public class ClusterInspectionJobService {
         }
         try {
             markReportRunning(reportId);
+            runtimeStatusService.markInspectionStarted("Inspection report " + reportId + " is running");
             inspectionService.generateReportContent(entity);
+            runtimeStatusService.markInspectionFinished("COMPLETED", "Inspection report " + reportId + " completed");
         } catch (Exception exception) {
             failReport(reportId, exception);
+            runtimeStatusService.markInspectionFinished("FAILED", exception.getMessage());
         }
     }
 

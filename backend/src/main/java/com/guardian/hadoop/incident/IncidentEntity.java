@@ -56,8 +56,29 @@ public class IncidentEntity {
     @Column(length = 128)
     private String owner;
 
+    @Column(name = "governance_status", length = 32)
+    private String governanceStatus;
+
+    @Column(name = "event_fingerprint", length = 1024)
+    private String eventFingerprint;
+
     @Column(name = "occurred_at", nullable = false)
     private Instant occurredAt;
+
+    @Column(name = "first_seen_at")
+    private Instant firstSeenAt;
+
+    @Column(name = "last_seen_at")
+    private Instant lastSeenAt;
+
+    @Column(name = "occurrence_count")
+    private Integer occurrenceCount;
+
+    @Column(name = "suppressed_until")
+    private Instant suppressedUntil;
+
+    @Column(name = "governance_note", columnDefinition = "TEXT")
+    private String governanceNote;
 
     @ElementCollection(fetch = FetchType.EAGER)
     @CollectionTable(name = "incident_evidence_item", joinColumns = @JoinColumn(name = "incident_id"))
@@ -176,6 +197,62 @@ public class IncidentEntity {
 
     public void setOccurredAt(Instant occurredAt) {
         this.occurredAt = occurredAt;
+    }
+
+    public String getGovernanceStatus() {
+        return governanceStatus;
+    }
+
+    public void setGovernanceStatus(String governanceStatus) {
+        this.governanceStatus = governanceStatus;
+    }
+
+    public String getEventFingerprint() {
+        return eventFingerprint;
+    }
+
+    public void setEventFingerprint(String eventFingerprint) {
+        this.eventFingerprint = eventFingerprint;
+    }
+
+    public Instant getFirstSeenAt() {
+        return firstSeenAt;
+    }
+
+    public void setFirstSeenAt(Instant firstSeenAt) {
+        this.firstSeenAt = firstSeenAt;
+    }
+
+    public Instant getLastSeenAt() {
+        return lastSeenAt;
+    }
+
+    public void setLastSeenAt(Instant lastSeenAt) {
+        this.lastSeenAt = lastSeenAt;
+    }
+
+    public Integer getOccurrenceCount() {
+        return occurrenceCount;
+    }
+
+    public void setOccurrenceCount(Integer occurrenceCount) {
+        this.occurrenceCount = occurrenceCount;
+    }
+
+    public Instant getSuppressedUntil() {
+        return suppressedUntil;
+    }
+
+    public void setSuppressedUntil(Instant suppressedUntil) {
+        this.suppressedUntil = suppressedUntil;
+    }
+
+    public String getGovernanceNote() {
+        return governanceNote;
+    }
+
+    public void setGovernanceNote(String governanceNote) {
+        this.governanceNote = governanceNote;
     }
 
     public List<String> getEvidence() {

@@ -190,6 +190,33 @@ export function SettingsPage() {
     setCurrentLogs(await getClouderaManagerCurrentLogs().catch(() => []));
   }
 
+  function sleep(ms: number) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
+  async function waitForCollectedCurrentLogs(previousLatestCollectedAt?: string | null, previousCount = 0) {
+    let latestLogs = await getClouderaManagerCurrentLogs().catch(() => [] as CmServiceLogSnapshot[]);
+    const hasFreshLogs = () => {
+      const latestCollectedAt = latestLogs[0]?.collectedAt ?? null;
+      return latestLogs.length > 0
+        && (latestCollectedAt !== previousLatestCollectedAt || latestLogs.length !== previousCount);
+    };
+
+    if (hasFreshLogs()) {
+      return latestLogs;
+    }
+
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await sleep(3000);
+      latestLogs = await getClouderaManagerCurrentLogs().catch(() => latestLogs);
+      if (hasFreshLogs()) {
+        break;
+      }
+    }
+
+    return latestLogs;
+  }
+
   async function persistConfig(nextConfig?: DataSourceConfig) {
     const target = nextConfig ?? config;
     setSaving(true);
@@ -247,10 +274,22 @@ export function SettingsPage() {
     if (!saved) return;
     setTestingCmCurrent(true);
     try {
+      const previousLatestCollectedAt = currentLogs[0]?.collectedAt
+        ?? cmCurrentResult?.recentLogs?.[0]?.collectedAt
+        ?? null;
+      const previousCount = currentLogs.length > 0 ? currentLogs.length : (cmCurrentResult?.recentLogs?.length ?? 0);
       const result = await getClouderaManagerCurrentStatus();
-      setCmCurrentResult(result);
-      await reloadCurrentLogs();
-      setMessage(result.message);
+      const latestLogs = await waitForCollectedCurrentLogs(previousLatestCollectedAt, previousCount);
+      setCurrentLogs(latestLogs);
+      setCmCurrentResult({
+        ...result,
+        recentLogs: latestLogs.length > 0 ? latestLogs : result.recentLogs
+      });
+      setMessage(
+        latestLogs.length > 0
+          ? `${result.message} 服务日志快照已刷新。`
+          : `${result.message} 当前状态已返回，服务日志仍在后台采集中。`
+      );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "CM 当前状态采集失败。");
     } finally {

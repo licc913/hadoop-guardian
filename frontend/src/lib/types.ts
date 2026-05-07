@@ -5,6 +5,13 @@ export type Incident = {
   serviceType: string;
   severity: string;
   status: string;
+  governanceStatus: string;
+  eventFingerprint: string;
+  firstSeenAt: string | null;
+  lastSeenAt: string | null;
+  occurrenceCount: number;
+  suppressedUntil: string | null;
+  governanceNote: string | null;
   title: string;
   summary: string;
   impactScope: string;
@@ -161,6 +168,7 @@ export type DashboardSummary = {
   diagnosingIncidents: number;
   criticalIncidents: number;
   actionRequiredIncidents: number;
+  suppressedIncidents: number;
 };
 
 export type ClouderaManagerSyncResponse = {
@@ -198,6 +206,34 @@ export type CmServiceLogSnapshot = {
   collectedAt: string;
 };
 
+export type CrossComponentRelatedIncident = {
+  incidentId: number;
+  incidentNo: string;
+  serviceType: string;
+  severity: string;
+  status: string;
+  title: string;
+  correlationScore: number;
+  relationSummary: string;
+  matchedSignals: string[];
+  sharedNodes: string[];
+  occurredAt: string | null;
+};
+
+export type CrossComponentAnalysis = {
+  primaryService: string;
+  probablePath: string;
+  confidence: number;
+  confidenceLabel: string;
+  summary: string;
+  impactAssessment: string;
+  correlatedServices: string[];
+  sharedNodes: string[];
+  signalHighlights: string[];
+  recommendedChecks: string[];
+  relatedIncidents: CrossComponentRelatedIncident[];
+};
+
 export type CmCurrentStatusResponse = {
   success: boolean;
   enabled: boolean;
@@ -216,6 +252,47 @@ export type SystemStatus = {
   clouderaManagerEnabled: boolean;
   databaseMode: string;
   incidentCount: number;
+  suppressedIncidentCount: number;
+  lastCmCollectionAt: string | null;
+  lastCmCollectionSuccess: boolean;
+  lastCmCollectionMessage: string;
+  lastCmRecentLogCount: number;
+  inspectionRunningCount: number;
+  inspectionFailedCount: number;
+  lastInspectionStartedAt: string | null;
+  lastInspectionCompletedAt: string | null;
+  lastInspectionStatus: string;
+  lastInspectionMessage: string;
+};
+
+export type IncidentGovernanceResponse = {
+  success: boolean;
+  message: string;
+  incident: Incident;
+  effectiveAt: string;
+};
+
+export type ApprovalRecordCreateRequest = {
+  actionRecommendationId?: number;
+  approvalStatus: string;
+  requestedBy: string;
+  approver?: string | null;
+  comment?: string | null;
+};
+
+export type ExecutionRecordCreateRequest = {
+  actionRecommendationId?: number;
+  executionStatus: string;
+  executor: string;
+  executionSummary: string;
+};
+
+export type PostmortemUpsertRequest = {
+  summary: string;
+  rootCause: string;
+  impactStatement: string;
+  timeline: string[];
+  preventionItems: string[];
 };
 
 export type ClouderaManagerSettings = {
@@ -352,5 +429,105 @@ export type ClusterInspectionReport = {
   sourceCollectedAt: string | null;
   completedAt: string | null;
   errorMessage: string | null;
+  createdAt: string;
+};
+
+export type SqlOptimizationEngine = "IMPALA" | "HIVE";
+
+export type SqlOptimizationRequest = {
+  engineType: SqlOptimizationEngine;
+  originalSql: string;
+  tableSchemaNote: string;
+  partitionInfo: string;
+  explainText: string;
+  errorText: string;
+  optimizationGoal: string;
+  createdBy?: string;
+};
+
+export type SqlOptimizationResult = {
+  id: number;
+  engineType: SqlOptimizationEngine;
+  originalSql: string;
+  tableSchemaNote: string | null;
+  partitionInfo: string | null;
+  explainText: string | null;
+  errorText: string | null;
+  optimizationGoal: string | null;
+  problemSummary: string;
+  optimizedSql: string;
+  optimizationPoints: string[];
+  riskNotes: string[];
+  validationSteps: string[];
+  ruleFindings: string[];
+  llmModel: string | null;
+  analysisSource: string;
+  createdBy: string;
+  createdAt: string;
+};
+
+export type ParameterOptimizationServiceType = "HDFS" | "YARN" | "HIVE_ON_TEZ" | "IMPALA";
+
+export type ParameterOptimizationRequest = {
+  serviceType: ParameterOptimizationServiceType;
+  currentSymptoms: string;
+  optimizationGoal: string;
+  sourceCodeHints: string;
+  manualConfigNote: string;
+  createdBy?: string;
+  useCurrentClusterConfig: boolean;
+};
+
+export type ParameterRecommendation = {
+  configKey: string;
+  currentValue: string;
+  recommendedValue: string;
+  reason: string;
+};
+
+export type ParameterConfigEntry = {
+  scopeType: string;
+  scopeName: string;
+  roleType: string;
+  configKey: string;
+  configValue: string;
+  valueSource: string;
+};
+
+export type ParameterOptimizationContextPreview = {
+  configured: boolean;
+  available: boolean;
+  message: string;
+  clusterName: string;
+  serviceName: string;
+  serviceType: string;
+  componentVersion: string;
+  serviceState: string;
+  healthSummary: string;
+  configEntries: Record<string, string>;
+  scopedConfigEntries: ParameterConfigEntry[];
+  recentSignals: string[];
+};
+
+export type ParameterOptimizationResult = {
+  id: number;
+  clusterName: string;
+  serviceName: string;
+  serviceType: string;
+  componentVersion: string | null;
+  currentSymptoms: string | null;
+  optimizationGoal: string | null;
+  configSnapshotText: string;
+  sourceCodeHints: string | null;
+  problemSummary: string;
+  recommendations: ParameterRecommendation[];
+  sourceEvidence: string[];
+  expectedBenefits: string[];
+  riskNotes: string[];
+  validationSteps: string[];
+  ruleFindings: string[];
+  llmModel: string | null;
+  analysisSource: string;
+  createdBy: string;
   createdAt: string;
 };

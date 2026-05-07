@@ -13,8 +13,11 @@ import com.guardian.hadoop.shared.DashboardSummary;
 import com.guardian.hadoop.shared.GuardianDataService;
 import com.guardian.hadoop.shared.SystemStatusResponse;
 import com.guardian.hadoop.workflow.ApprovalRecord;
+import com.guardian.hadoop.workflow.ApprovalRecordCreateRequest;
 import com.guardian.hadoop.workflow.ExecutionRecord;
+import com.guardian.hadoop.workflow.ExecutionRecordCreateRequest;
 import com.guardian.hadoop.workflow.PostmortemRecord;
+import com.guardian.hadoop.workflow.PostmortemUpsertRequest;
 import java.util.List;
 import javax.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -91,6 +94,12 @@ public class IncidentController {
         return guardianDataService.getIncidentServiceLogs(incidentId);
     }
 
+    @GetMapping("/incidents/{incidentId}/cross-component-analysis")
+    public CrossComponentAnalysisRecord getCrossComponentAnalysis(@PathVariable long incidentId) {
+        ensureIncidentExists(incidentId);
+        return guardianDataService.getCrossComponentAnalysis(incidentId);
+    }
+
     @GetMapping("/incidents/{incidentId}/approvals")
     public List<ApprovalRecord> getIncidentApprovals(@PathVariable long incidentId) {
         ensureIncidentExists(incidentId);
@@ -143,14 +152,94 @@ public class IncidentController {
         return response;
     }
 
+    @PostMapping("/incidents/{incidentId}/suppress")
+    public IncidentGovernanceResponse suppressIncident(@PathVariable long incidentId,
+                                                       @RequestBody(required = false) IncidentGovernanceRequest request) {
+        IncidentGovernanceResponse response = guardianDataService.suppressIncident(
+            incidentId,
+            request == null ? null : request.getOperator(),
+            request == null ? null : request.getNote(),
+            request == null ? null : request.getSuppressMinutes()
+        );
+        if (response == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Incident not found");
+        }
+        return response;
+    }
+
+    @PostMapping("/incidents/{incidentId}/resume")
+    public IncidentGovernanceResponse resumeIncident(@PathVariable long incidentId,
+                                                     @RequestBody(required = false) IncidentGovernanceRequest request) {
+        IncidentGovernanceResponse response = guardianDataService.resumeIncident(
+            incidentId,
+            request == null ? null : request.getOperator(),
+            request == null ? null : request.getNote()
+        );
+        if (response == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Incident not found");
+        }
+        return response;
+    }
+
+    @PostMapping("/incidents/{incidentId}/approvals")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApprovalRecord createApprovalRecord(@PathVariable long incidentId,
+                                               @RequestBody ApprovalRecordCreateRequest request) {
+        ApprovalRecord record = guardianDataService.createApprovalRecord(incidentId, request);
+        if (record == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Incident or action recommendation not found");
+        }
+        return record;
+    }
+
+    @PostMapping("/incidents/{incidentId}/executions")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ExecutionRecord createExecutionRecord(@PathVariable long incidentId,
+                                                 @RequestBody ExecutionRecordCreateRequest request) {
+        ExecutionRecord record = guardianDataService.createExecutionRecord(incidentId, request);
+        if (record == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Incident or action recommendation not found");
+        }
+        return record;
+    }
+
+    @PostMapping("/incidents/{incidentId}/postmortem")
+    public PostmortemRecord upsertPostmortem(@PathVariable long incidentId,
+                                             @RequestBody PostmortemUpsertRequest request) {
+        PostmortemRecord record = guardianDataService.upsertPostmortem(incidentId, request);
+        if (record == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Incident not found");
+        }
+        return record;
+    }
+
     @PostMapping("/integrations/cloudera-manager/sync-alerts")
     public ClouderaManagerSyncResponse syncClouderaManagerAlerts() {
-        return clouderaManagerSyncService.syncAlerts();
+        try {
+            return clouderaManagerSyncService.syncAlerts();
+        } catch (Exception exception) {
+            return new ClouderaManagerSyncResponse(
+                false,
+                true,
+                0,
+                0,
+                0,
+                "Cloudera Manager 告警同步失败。",
+                exception.getClass().getSimpleName() + ": " + defaultIfBlank(exception.getMessage(), "unknown error"),
+                java.time.Instant.now(),
+                "",
+                java.util.Collections.emptyList()
+            );
+        }
     }
 
     private void ensureIncidentExists(long incidentId) {
         if (guardianDataService.getIncident(incidentId) == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Incident not found");
         }
+    }
+
+    private String defaultIfBlank(String value, String fallback) {
+        return value == null || value.trim().isEmpty() ? fallback : value.trim();
     }
 }
