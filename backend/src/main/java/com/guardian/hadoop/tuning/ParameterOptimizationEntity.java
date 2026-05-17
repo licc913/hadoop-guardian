@@ -25,7 +25,7 @@ public class ParameterOptimizationEntity {
     @Column(name = "service_type", nullable = false, length = 64)
     private String serviceType;
 
-    @Column(name = "component_version", length = 256)
+    @Column(name = "component_version", columnDefinition = "text")
     private String componentVersion;
 
     @Column(name = "current_symptoms", columnDefinition = "text")
@@ -61,7 +61,7 @@ public class ParameterOptimizationEntity {
     @Column(name = "rule_findings", columnDefinition = "text", nullable = false)
     private String ruleFindings;
 
-    @Column(name = "llm_model", length = 128)
+    @Column(name = "llm_model", columnDefinition = "text")
     private String llmModel;
 
     @Column(name = "analysis_source", nullable = false, length = 32)

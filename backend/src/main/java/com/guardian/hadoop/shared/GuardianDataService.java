@@ -12,8 +12,6 @@ import com.guardian.hadoop.diagnosis.DiagnosisTaskRepository;
 import com.guardian.hadoop.diagnosis.DiagnosisTaskResponse;
 import com.guardian.hadoop.diagnosis.LlmDiagnosisResult;
 import com.guardian.hadoop.diagnosis.LlmDiagnosisService;
-import com.guardian.hadoop.incident.CrossComponentAnalysisRecord;
-import com.guardian.hadoop.incident.CrossComponentAnalysisService;
 import com.guardian.hadoop.incident.IncidentCloseResponse;
 import com.guardian.hadoop.incident.IncidentEntity;
 import com.guardian.hadoop.incident.IncidentGovernanceResponse;
@@ -71,7 +69,6 @@ public class GuardianDataService {
     private final LlmDiagnosisService llmDiagnosisService;
     private final ClusterInspectionReportRepository inspectionReportRepository;
     private final PlatformRuntimeStatusService runtimeStatusService;
-    private final CrossComponentAnalysisService crossComponentAnalysisService;
     private final String datasourceUrl;
 
     public GuardianDataService(IncidentRepository incidentRepository,
@@ -87,7 +84,6 @@ public class GuardianDataService {
                                LlmDiagnosisService llmDiagnosisService,
                                ClusterInspectionReportRepository inspectionReportRepository,
                                PlatformRuntimeStatusService runtimeStatusService,
-                               CrossComponentAnalysisService crossComponentAnalysisService,
                                @Value("${spring.datasource.url}") String datasourceUrl) {
         this.incidentRepository = incidentRepository;
         this.diagnosisRepository = diagnosisRepository;
@@ -102,7 +98,6 @@ public class GuardianDataService {
         this.llmDiagnosisService = llmDiagnosisService;
         this.inspectionReportRepository = inspectionReportRepository;
         this.runtimeStatusService = runtimeStatusService;
-        this.crossComponentAnalysisService = crossComponentAnalysisService;
         this.datasourceUrl = datasourceUrl;
     }
 
@@ -283,10 +278,6 @@ public class GuardianDataService {
             return Collections.emptyList();
         }
         return logSnapshotService.getLogsForIncident(incident);
-    }
-
-    public CrossComponentAnalysisRecord getCrossComponentAnalysis(long incidentId) {
-        return crossComponentAnalysisService.analyze(incidentId);
     }
 
     @Transactional

@@ -2,6 +2,7 @@ package com.guardian.hadoop.sql;
 
 import com.guardian.hadoop.integration.llm.DiagnosisLlmSettingsEntity;
 import com.guardian.hadoop.integration.llm.DiagnosisLlmSettingsService;
+import com.guardian.hadoop.integration.llm.LlmCallRecordService;
 import com.guardian.hadoop.knowledge.KnowledgeSuggestionRecord;
 import com.guardian.hadoop.knowledge.KnowledgeSuggestionService;
 import java.net.SocketTimeoutException;
@@ -41,11 +42,14 @@ public class SqlOptimizationLlmService {
 
     private final DiagnosisLlmSettingsService settingsService;
     private final KnowledgeSuggestionService knowledgeSuggestionService;
+    private final LlmCallRecordService llmCallRecordService;
 
     public SqlOptimizationLlmService(DiagnosisLlmSettingsService settingsService,
-                                     KnowledgeSuggestionService knowledgeSuggestionService) {
+                                     KnowledgeSuggestionService knowledgeSuggestionService,
+                                     LlmCallRecordService llmCallRecordService) {
         this.settingsService = settingsService;
         this.knowledgeSuggestionService = knowledgeSuggestionService;
+        this.llmCallRecordService = llmCallRecordService;
     }
 
     public SqlOptimizationLlmOutcome optimize(SqlOptimizationRequest request, SqlOptimizationRuleAnalysis ruleAnalysis) {
@@ -59,6 +63,7 @@ public class SqlOptimizationLlmService {
         }
 
         String prompt = buildPrompt(request, ruleAnalysis);
+        Long callRecordId = llmCallRecordService.start("SQL_OPTIMIZATION", settings.getModel(), prompt);
         try {
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
@@ -82,11 +87,14 @@ public class SqlOptimizationLlmService {
             );
             String content = extractContent(response);
             if (!hasText(content)) {
+                llmCallRecordService.fail(callRecordId, "empty model response");
                 return fallback(ruleAnalysis, request, "RULE_FALLBACK", settings.getModel(), "大模型调用成功，但没有返回可解析内容。");
             }
+            llmCallRecordService.finish(callRecordId, content);
             return parseContent(content, settings.getModel(), ruleAnalysis, request);
         } catch (RestClientResponseException exception) {
             logger.warn("SQL optimization request failed", exception);
+            llmCallRecordService.fail(callRecordId, "HTTP " + exception.getRawStatusCode() + " " + exception.getStatusText());
             return fallback(
                 ruleAnalysis,
                 request,
@@ -96,6 +104,7 @@ public class SqlOptimizationLlmService {
             );
         } catch (ResourceAccessException exception) {
             logger.warn("SQL optimization request timed out or was unreachable", exception);
+            llmCallRecordService.fail(callRecordId, defaultIfBlank(exception.getMessage(), "resource access error"));
             Throwable root = exception.getMostSpecificCause();
             if (root instanceof SocketTimeoutException) {
                 return fallback(ruleAnalysis, request, "RULE_FALLBACK", settings.getModel(), "大模型优化超时，已回退到规则分析结果。");
@@ -109,6 +118,7 @@ public class SqlOptimizationLlmService {
             );
         } catch (Exception exception) {
             logger.warn("Failed to generate SQL optimization", exception);
+            llmCallRecordService.fail(callRecordId, exception.getClass().getSimpleName() + ": " + defaultIfBlank(exception.getMessage(), "unknown error"));
             return fallback(
                 ruleAnalysis,
                 request,

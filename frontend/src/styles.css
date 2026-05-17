@@ -87,6 +87,22 @@ textarea {
   font: inherit;
 }
 
+select {
+  color-scheme: dark;
+}
+
+select option,
+select optgroup {
+  color: #e8f1f2;
+  background: #0b1720;
+}
+
+select option:checked,
+select option:hover {
+  color: #061017;
+  background: #8ddfca;
+}
+
 button {
   border: 0;
 }
@@ -462,6 +478,10 @@ input[type="checkbox"] {
   color: #ffffff;
 }
 
+.text-link-pending {
+  color: var(--highlight);
+}
+
 .panel,
 .subpanel,
 .status-card,
@@ -655,6 +675,8 @@ input[type="checkbox"] {
 .button,
 .primary-button,
 .secondary-button {
+  position: relative;
+  overflow: hidden;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -663,7 +685,7 @@ input[type="checkbox"] {
   border-radius: 999px;
   font-weight: 700;
   cursor: pointer;
-  transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease, border-color 160ms ease;
+  transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease, border-color 160ms ease, opacity 160ms ease;
 }
 
 .button,
@@ -685,8 +707,69 @@ input[type="checkbox"] {
 .button-secondary:disabled,
 .primary-button:disabled,
 .secondary-button:disabled {
-  opacity: 0.7;
-  cursor: wait;
+  opacity: 0.78;
+  cursor: not-allowed;
+}
+
+.button.is-busy,
+.primary-button.is-busy,
+.secondary-button.is-busy,
+.button-secondary.is-busy {
+  cursor: progress;
+  opacity: 1;
+  transform: translateY(-1px);
+}
+
+.button.is-busy::after,
+.primary-button.is-busy::after,
+.secondary-button.is-busy::after,
+.button-secondary.is-busy::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  pointer-events: none;
+  background:
+    linear-gradient(
+      110deg,
+      transparent 0%,
+      transparent 28%,
+      rgba(255, 255, 255, 0.32) 45%,
+      transparent 62%,
+      transparent 100%
+    );
+  transform: translateX(-115%);
+  animation: button-scan 1.45s var(--ease-out) infinite;
+}
+
+.loading-button-content {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.loading-button-pulse {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.loading-button-pulse span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.38;
+  animation: loading-dot 920ms ease-in-out infinite;
+}
+
+.loading-button-pulse span:nth-child(2) {
+  animation-delay: 120ms;
+}
+
+.loading-button-pulse span:nth-child(3) {
+  animation-delay: 240ms;
 }
 
 .flash-message {
@@ -697,6 +780,18 @@ input[type="checkbox"] {
 .error-message {
   color: var(--critical);
   font-size: 14px;
+}
+
+.settings-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.explanation-card {
+  display: grid;
+  gap: 12px;
+  align-content: start;
 }
 
 .distribution-list,
@@ -747,6 +842,13 @@ input[type="checkbox"] {
     rgba(255, 255, 255, 0.025);
 }
 
+.incident-row-pending {
+  border-color: rgba(240, 179, 93, 0.28);
+  background:
+    linear-gradient(135deg, rgba(240, 179, 93, 0.12), rgba(255, 255, 255, 0.02)),
+    rgba(255, 255, 255, 0.03);
+}
+
 .incident-order {
   display: inline-flex;
   align-items: center;
@@ -763,6 +865,12 @@ input[type="checkbox"] {
 
 .incident-row h4 {
   font-size: clamp(22px, 2.2vw, 30px);
+}
+
+.incident-open-state {
+  color: var(--muted);
+  font-size: 14px;
+  white-space: nowrap;
 }
 
 .row-meta {
@@ -1109,9 +1217,52 @@ input[type="checkbox"] {
   align-items: center;
 }
 
+.compact-toolbar {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(150px, 190px) minmax(150px, 190px);
+  align-items: center;
+}
+
 .toolbar .button,
 .toolbar .button-secondary {
   min-width: 148px;
+}
+
+.table-shell {
+  width: 100%;
+  overflow: auto;
+  border-radius: 18px;
+  border: 1px solid rgba(140, 170, 188, 0.16);
+  background: rgba(6, 18, 27, 0.38);
+}
+
+.detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 720px;
+  color: var(--text);
+}
+
+.detail-table th,
+.detail-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(140, 170, 188, 0.12);
+  text-align: left;
+  vertical-align: top;
+}
+
+.detail-table th {
+  color: var(--gold);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.detail-table td {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .diagnosis-summary-card,
@@ -1205,6 +1356,24 @@ input[type="checkbox"] {
   border-color: rgba(100, 208, 194, 0.4);
   background: rgba(255, 255, 255, 0.05);
   box-shadow: 0 0 0 3px rgba(100, 208, 194, 0.08);
+}
+
+.service-log-card {
+  display: grid;
+  gap: 12px;
+}
+
+.service-log-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.7;
+  color: var(--text);
+  font-family: "Consolas", "Cascadia Mono", monospace;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(140, 170, 188, 0.12);
+  border-radius: 14px;
+  padding: 14px 16px;
 }
 
 .app-field {
@@ -1641,6 +1810,29 @@ input[type="checkbox"] {
   }
 }
 
+@keyframes button-scan {
+  0% {
+    transform: translateX(-115%);
+  }
+
+  100% {
+    transform: translateX(115%);
+  }
+}
+
+@keyframes loading-dot {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.32;
+  }
+
+  45% {
+    transform: translateY(-3px);
+    opacity: 0.95;
+  }
+}
+
 @media (max-width: 1280px) {
   .summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1723,6 +1915,10 @@ input[type="checkbox"] {
   .detail-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .compact-toolbar {
+    grid-template-columns: 1fr;
   }
 
   .sidebar {

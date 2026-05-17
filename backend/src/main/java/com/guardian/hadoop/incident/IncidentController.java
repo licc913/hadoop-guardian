@@ -94,12 +94,6 @@ public class IncidentController {
         return guardianDataService.getIncidentServiceLogs(incidentId);
     }
 
-    @GetMapping("/incidents/{incidentId}/cross-component-analysis")
-    public CrossComponentAnalysisRecord getCrossComponentAnalysis(@PathVariable long incidentId) {
-        ensureIncidentExists(incidentId);
-        return guardianDataService.getCrossComponentAnalysis(incidentId);
-    }
-
     @GetMapping("/incidents/{incidentId}/approvals")
     public List<ApprovalRecord> getIncidentApprovals(@PathVariable long incidentId) {
         ensureIncidentExists(incidentId);

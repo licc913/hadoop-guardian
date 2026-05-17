@@ -7,6 +7,7 @@ import { IncidentListPage } from "./pages/IncidentListPage";
 import { InspectionPage } from "./pages/InspectionPage";
 import { LlmConsolePage } from "./pages/LlmConsolePage";
 import { LoginPage } from "./pages/LoginPage";
+import { OperationTasksPage } from "./pages/OperationTasksPage";
 import { ParameterOptimizationPage } from "./pages/ParameterOptimizationPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SqlOptimizationPage } from "./pages/SqlOptimizationPage";
@@ -49,7 +50,8 @@ export default function App() {
             <div className="brand-chip">数据平台运维台</div>
             <h1>Hadoop Guardian</h1>
             <p className="sidebar-copy">
-              面向 HDFS、YARN、Hive on Tez 与 Impala 的故障处置工作台。平台建立在 Cloudera Manager 之上，聚焦事件研判、证据采集、影响评估与受控处置。
+              面向 HDFS、YARN、Hive on Tez 与 Impala 的智能运维工作台。平台建立在
+              Cloudera Manager 之上，聚焦事件研判、证据采集、影响评估与受控处置。
             </p>
           </div>
 
@@ -64,7 +66,7 @@ export default function App() {
             <span className="nav-index">01</span>
             <span className="nav-body">
               <span className="nav-title">事件指挥中心</span>
-              <span className="nav-copy">查看运行态势、聚合风险信号，并进入事件详情。</span>
+              <span className="nav-copy">查看运行态势，聚合风险信号，并进入事件详情。</span>
             </span>
           </NavLink>
 
@@ -88,7 +90,7 @@ export default function App() {
             <span className="nav-index">04</span>
             <span className="nav-body">
               <span className="nav-title">SQL 优化中心</span>
-              <span className="nav-copy">独立处理 Impala SQL 与 Hive SQL 优化，支持规则扫描、大模型改写和历史追溯。</span>
+              <span className="nav-copy">处理 Impala SQL 与 Hive SQL 优化，支持规则扫描、大模型改写与历史追溯。</span>
             </span>
           </NavLink>
 
@@ -96,14 +98,23 @@ export default function App() {
             <span className="nav-index">05</span>
             <span className="nav-body">
               <span className="nav-title">巡检报告中心</span>
-              <span className="nav-copy">汇总当前集群状态、日志、事件与知识库证据，生成并导出 DOCX 巡检报告。</span>
+              <span className="nav-copy">汇总集群状态、日志、事件与知识证据，生成并导出 DOCX 巡检报告。</span>
             </span>
           </NavLink>
+
           <NavLink className="nav-link" to="/parameter-optimization">
             <span className="nav-index">06</span>
             <span className="nav-body">
               <span className="nav-title">参数优化中心</span>
-              <span className="nav-copy">采集当前组件配置、版本、日志与知识依据，输出 HDFS、YARN、Hive on Tez 与 Impala 的参数优化建议。</span>
+              <span className="nav-copy">采集配置、版本、日志与知识依据，输出组件参数优化建议。</span>
+            </span>
+          </NavLink>
+
+          <NavLink className="nav-link" to="/ops-tasks">
+            <span className="nav-index">07</span>
+            <span className="nav-body">
+              <span className="nav-title">任务状态中心</span>
+              <span className="nav-copy">统一查看日志采集、巡检报告和参数优化等后台任务状态。</span>
             </span>
           </NavLink>
         </nav>
@@ -146,6 +157,7 @@ export default function App() {
             <Route path="/sql-optimization" element={<SqlOptimizationPage />} />
             <Route path="/inspections" element={<InspectionPage />} />
             <Route path="/parameter-optimization" element={<ParameterOptimizationPage />} />
+            <Route path="/ops-tasks" element={<OperationTasksPage />} />
             <Route path="/incidents/:incidentId" element={<IncidentDetailPage />} />
           </Routes>
         </div>

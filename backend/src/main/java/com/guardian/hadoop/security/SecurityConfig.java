@@ -24,6 +24,18 @@ public class SecurityConfig {
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        if (!properties.isEnabled()) {
+            http
+                .cors()
+                .and()
+                .csrf().disable()
+                .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                .and()
+                .authorizeRequests()
+                .anyRequest().permitAll();
+            return http.build();
+        }
+
         http
             .cors()
             .and()
@@ -43,11 +55,7 @@ public class SecurityConfig {
             .antMatchers(HttpMethod.GET, "/api/**").authenticated()
             .anyRequest().permitAll();
 
-        if (properties.isEnabled()) {
-            http.addFilterBefore(bearerTokenAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
-        } else {
-            http.authorizeRequests().anyRequest().permitAll();
-        }
+        http.addFilterBefore(bearerTokenAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
     }

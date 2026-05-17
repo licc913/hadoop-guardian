@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { LoadingButton } from "../components/LoadingButton";
 import {
   analyzeSqlOptimization,
   getSqlOptimizationHistory,
@@ -19,7 +20,7 @@ const EMPTY_REQUEST: SqlOptimizationRequest = {
   partitionInfo: "",
   explainText: "",
   errorText: "",
-  optimizationGoal: "提升执行效率，同时保证结果语义不变",
+  optimizationGoal: "提升执行效率，同时保持结果语义不变。",
   createdBy: "frontend-operator"
 };
 
@@ -35,6 +36,19 @@ function formatTime(value: string) {
 
 function engineLabel(engineType: SqlOptimizationEngine) {
   return engineType === "HIVE" ? "Hive SQL" : "Impala SQL";
+}
+
+function renderList(items: string[], emptyText: string) {
+  if (!items.length) {
+    return <p className="muted">{emptyText}</p>;
+  }
+  return (
+    <ul className="tight-list">
+      {items.map((item) => (
+        <li key={item}>{item}</li>
+      ))}
+    </ul>
+  );
 }
 
 export function SqlOptimizationPage() {
@@ -167,13 +181,12 @@ export function SqlOptimizationPage() {
           <p className="eyebrow">SQL 优化中心</p>
           <h2>独立分析 Impala SQL 与 Hive SQL，结合规则扫描、最新知识库与大模型给出优化建议</h2>
           <p className="lead">
-            这里不绑定事件诊断。后端会先做规则分析，再结合管理员维护的 SQL 优化知识库和大模型，输出问题总结、优化后 SQL、
-            风险提示与验证步骤。
+            这里不绑定事件诊断。后端会先做规则分析，再结合管理员维护的 SQL 优化知识库和大模型，输出问题总结、优化后 SQL、风险提示与验证步骤。
           </p>
           <div className="detail-actions">
-            <button className="primary-button" disabled={analyzing} onClick={() => void handleAnalyze()} type="button">
-              {analyzing ? "分析中..." : "开始优化"}
-            </button>
+            <LoadingButton className="primary-button" loading={analyzing} loadingText="正在分析 SQL 与知识库" onClick={() => void handleAnalyze()}>
+              开始优化
+            </LoadingButton>
             <button className="secondary-button" onClick={() => setForm(EMPTY_REQUEST)} type="button">
               重置输入
             </button>
@@ -247,7 +260,7 @@ export function SqlOptimizationPage() {
               className="app-textarea"
               value={form.partitionInfo}
               onChange={(event) => updateField("partitionInfo", event.target.value)}
-              placeholder="可选：例如 dt, region, ds"
+              placeholder="可选：例如 dt、region、ds"
             />
           </label>
           <label className="app-field">
@@ -291,9 +304,9 @@ export function SqlOptimizationPage() {
                 placeholder="输入优化经验、反模式、改写建议或验证方法。保存后，下次 SQL 优化会自动命中这些知识。"
               />
             </label>
-            <button className="secondary-button" disabled={savingKnowledge} onClick={() => void handleSaveKnowledge()} type="button">
-              {savingKnowledge ? "保存中..." : "保存 SQL 知识"}
-            </button>
+            <LoadingButton className="secondary-button" loading={savingKnowledge} loadingText="正在保存 SQL 知识" onClick={() => void handleSaveKnowledge()}>
+              保存 SQL 知识
+            </LoadingButton>
           </div>
         </aside>
 
@@ -323,47 +336,31 @@ export function SqlOptimizationPage() {
               <div className="summary-grid sql-summary-grid">
                 <div className="subpanel stack-sm">
                   <p className="eyebrow">规则发现</p>
-                  <ul className="tight-list">
-                    {selectedResult.ruleFindings.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
+                  {renderList(selectedResult.ruleFindings, "当前没有命中额外规则。")}
                 </div>
                 <div className="subpanel stack-sm">
                   <p className="eyebrow">优化点</p>
-                  <ul className="tight-list">
-                    {selectedResult.optimizationPoints.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
+                  {renderList(selectedResult.optimizationPoints, "当前没有提取到明确优化点。")}
                 </div>
                 <div className="subpanel stack-sm">
                   <p className="eyebrow">风险提示</p>
-                  <ul className="tight-list">
-                    {selectedResult.riskNotes.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
+                  {renderList(selectedResult.riskNotes, "当前没有额外风险提示。")}
                 </div>
                 <div className="subpanel stack-sm">
                   <p className="eyebrow">验证步骤</p>
-                  <ul className="tight-list">
-                    {selectedResult.validationSteps.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
+                  {renderList(selectedResult.validationSteps, "当前没有补充验证步骤。")}
                 </div>
               </div>
             </div>
           ) : (
-            <div className="empty-state">先在左侧输入 SQL 并点击“开始优化”，结果会展示在这里。</div>
+            <div className="empty-state">先在左侧输入 SQL 并点击“开始优化”，结果会显示在这里。</div>
           )}
         </section>
 
         <aside className="panel chat-sidebar">
           <div className="panel-head">
             <div>
-              <p className="eyebrow">历史与知识</p>
+              <p className="eyebrow">历史与复用</p>
               <h3>最近优化结果</h3>
             </div>
           </div>
@@ -387,7 +384,6 @@ export function SqlOptimizationPage() {
               ))}
             </div>
           )}
-
         </aside>
       </section>
     </div>

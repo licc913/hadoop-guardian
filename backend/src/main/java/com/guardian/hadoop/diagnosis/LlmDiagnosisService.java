@@ -7,6 +7,7 @@ import com.guardian.hadoop.integration.cm.CmServiceLogSnapshotRecord;
 import com.guardian.hadoop.integration.cm.CmServiceLogSnapshotService;
 import com.guardian.hadoop.integration.llm.DiagnosisLlmSettingsEntity;
 import com.guardian.hadoop.integration.llm.DiagnosisLlmSettingsService;
+import com.guardian.hadoop.integration.llm.LlmCallRecordService;
 import com.guardian.hadoop.knowledge.KnowledgeSuggestionRecord;
 import com.guardian.hadoop.knowledge.KnowledgeSuggestionService;
 import java.io.IOException;
@@ -36,34 +37,38 @@ public class LlmDiagnosisService {
     private final ObjectMapper objectMapper;
     private final KnowledgeSuggestionService knowledgeSuggestionService;
     private final CmServiceLogSnapshotService logSnapshotService;
+    private final LlmCallRecordService llmCallRecordService;
 
     public LlmDiagnosisService(DiagnosisLlmSettingsService settingsService,
                                ObjectMapper objectMapper,
                                KnowledgeSuggestionService knowledgeSuggestionService,
-                               CmServiceLogSnapshotService logSnapshotService) {
+                               CmServiceLogSnapshotService logSnapshotService,
+                               LlmCallRecordService llmCallRecordService) {
         this.settingsService = settingsService;
         this.objectMapper = objectMapper;
         this.knowledgeSuggestionService = knowledgeSuggestionService;
         this.logSnapshotService = logSnapshotService;
+        this.llmCallRecordService = llmCallRecordService;
     }
 
     public LlmDiagnosisResult generate(IncidentEntity incident, String triggerReason, String triggerBy) {
         DiagnosisLlmSettingsEntity settings = settingsService.getEffectiveSettings();
         boolean configured = hasText(settings.getEndpoint()) && hasText(settings.getApiKey()) && hasText(settings.getModel());
         if (!settings.isEnabled() && !configured) {
-            return LlmDiagnosisResult.failure("AI diagnosis is disabled.", "Enable and save the LLM settings first.");
+            return LlmDiagnosisResult.failure("AI diagnosis is disabled.", "Please enable and save LLM settings first.");
         }
         if (!configured) {
-            return LlmDiagnosisResult.failure("AI diagnosis settings are incomplete.", "Check endpoint, API key, and model.");
+            return LlmDiagnosisResult.failure("AI diagnosis settings are incomplete.", "Please check endpoint, apiKey and model.");
         }
 
+        List<CmServiceLogSnapshotRecord> serviceLogs = logSnapshotService.getLogsForIncident(incident);
         List<KnowledgeSuggestionRecord> knowledgeSuggestions = knowledgeSuggestionService.search(
             incident.getServiceType(),
-            safe(incident.getTitle()) + "\n" + safe(incident.getSummary()) + "\n" + String.join("\n", incident.getEvidence()),
+            buildKnowledgeQuery(incident, serviceLogs),
             3
         );
-        List<CmServiceLogSnapshotRecord> serviceLogs = logSnapshotService.getLogsForIncident(incident);
         String prompt = buildIncidentPrompt(incident, triggerReason, triggerBy, knowledgeSuggestions, serviceLogs);
+        Long callRecordId = llmCallRecordService.start("DIAGNOSIS", settings.getModel(), prompt);
 
         try {
             HttpHeaders headers = new HttpHeaders();
@@ -74,10 +79,6 @@ public class LlmDiagnosisService {
             payload.put("model", settings.getModel().trim());
             payload.put("stream", Boolean.FALSE);
             payload.put("temperature", settings.getTemperature());
-            int maxTokens = effectiveMaxTokens(settings);
-            if (maxTokens > 0) {
-                payload.put("max_tokens", maxTokens);
-            }
             payload.put("messages", buildMessages(prompt));
 
             @SuppressWarnings("unchecked")
@@ -89,19 +90,21 @@ public class LlmDiagnosisService {
 
             String content = extractContent(response);
             if (!hasText(content)) {
+                llmCallRecordService.fail(callRecordId, summarizeMissingContentResponse(response));
                 return LlmDiagnosisResult.failure(
-                    "AI model responded but did not return a final diagnosis body.",
+                    "AI returned a response without final diagnosis content.",
                     summarizeMissingContentResponse(response)
                 );
             }
+            llmCallRecordService.finish(callRecordId, content);
 
             try {
                 return LlmDiagnosisResult.success(parseBlueprint(content, incident.getServiceType()));
             } catch (IOException parseException) {
                 if (looksLikeReasoningOnly(content)) {
                     return LlmDiagnosisResult.failure(
-                        "AI model returned reasoning text but no final diagnosis JSON.",
-                        "Increase max output tokens, or use a non-reasoning chat model for the diagnosis task."
+                        "AI returned reasoning text but no final diagnosis JSON.",
+                        "Please increase max output tokens or use a chat model that returns final content."
                     );
                 }
                 logger.warn("Failed to parse LLM diagnosis JSON, falling back to plain text blueprint", parseException);
@@ -109,15 +112,16 @@ public class LlmDiagnosisService {
             }
         } catch (RestClientResponseException exception) {
             logger.warn("External LLM diagnosis request failed", exception);
+            llmCallRecordService.fail(callRecordId, buildHttpErrorDetails(exception));
             return LlmDiagnosisResult.failure("AI request failed.", buildHttpErrorDetails(exception));
         } catch (ResourceAccessException exception) {
             logger.warn("External LLM diagnosis timed out or was unreachable", exception);
+            llmCallRecordService.fail(callRecordId, defaultIfBlank(exception.getMessage(), exception.getClass().getSimpleName()));
             Throwable root = exception.getMostSpecificCause();
             if (root instanceof SocketTimeoutException) {
                 return LlmDiagnosisResult.failure(
                     "AI diagnosis timed out.",
-                    "Current read timeout=" + effectiveReadTimeout(settings, prompt)
-                        + "ms. Reduce prompt size or increase the timeout."
+                    "Current read timeout=" + effectiveReadTimeout(settings, prompt) + "ms. Increase timeout or reduce prompt size."
                 );
             }
             return LlmDiagnosisResult.failure(
@@ -126,6 +130,7 @@ public class LlmDiagnosisService {
             );
         } catch (Exception exception) {
             logger.warn("Failed to generate diagnosis from external LLM", exception);
+            llmCallRecordService.fail(callRecordId, defaultIfBlank(exception.getMessage(), exception.getClass().getSimpleName()));
             return LlmDiagnosisResult.failure(
                 "AI response could not be parsed.",
                 defaultIfBlank(exception.getMessage(), exception.getClass().getSimpleName())
@@ -133,19 +138,33 @@ public class LlmDiagnosisService {
         }
     }
 
+    private String buildKnowledgeQuery(IncidentEntity incident, List<CmServiceLogSnapshotRecord> serviceLogs) {
+        StringBuilder builder = new StringBuilder();
+        builder.append(safe(incident.getTitle())).append('\n');
+        builder.append(safe(incident.getSummary())).append('\n');
+        builder.append(safe(incident.getImpactScope())).append('\n');
+        builder.append(String.join("\n", incident.getEvidence())).append('\n');
+        if (serviceLogs != null) {
+            for (CmServiceLogSnapshotRecord log : serviceLogs) {
+                builder.append(defaultIfBlank(log.getLogText(), "")).append('\n');
+            }
+        }
+        return builder.toString();
+    }
     private List<Map<String, String> > buildMessages(String prompt) {
         List<Map<String, String> > messages = new ArrayList<Map<String, String> >();
         messages.add(message(
             "system",
-            "你是资深 CDP/Hadoop 平台故障诊断专家，擅长基于 Cloudera Manager 服务状态、角色日志和运维知识库做根因分析。"
-                + "你必须只返回一个 JSON 对象，不要输出 Markdown、解释说明、代码块或额外文本。"
-                + "JSON 字段名必须固定为：rootCause, confidence, impactLevel, crossComponentPath, recommendations, followUps, "
-                + "actionName, actionType, actionRiskLevel, actionRequiresApproval, actionRecommendationText。"
-                + "所有自然语言字段值必须使用简体中文。"
-                + "诊断必须优先基于当前服务日志，不能编造日志中不存在的现象。"
-                + "rootCause 必须写得充分，至少覆盖：现象、直接原因、关键日志证据、受影响角色或节点。"
-                + "recommendations 必须给出可执行步骤，而不是空泛建议。"
-                + "followUps 必须写待补充证据、风险提示或验证步骤。"
+            "You are a senior CDP/Hadoop operations diagnosis expert. Return exactly one JSON object and no Markdown. "
+                + "The JSON field names must be: rootCause, confidence, impactLevel, crossComponentPath, recommendations, followUps, "
+                + "actionName, actionType, actionRiskLevel, actionRequiresApproval, actionRecommendationText. "
+                + "All natural-language values must be Simplified Chinese. "
+                + "Base the diagnosis primarily on the current WARN/ERROR service logs and incident detail evidence. Do not invent symptoms. "
+                + "rootCause must be detailed and structured for operators, including symptom, exact evidence, direct cause, impacted role/host, impact scope, reasoning, and uncertainty. "
+                + "recommendations must contain at least 6 actionable steps; each step must include purpose, exact check/action, validation, and risk. "
+                + "followUps must contain at least 4 evidence or verification items. "
+                + "actionRecommendationText must be a complete SOP, not a one-line summary. "
+                + "Ignore knowledge-base entries that are not clearly relevant to the current service and log keywords."
         ));
         messages.add(message("user", prompt));
         return messages;
@@ -164,83 +183,92 @@ public class LlmDiagnosisService {
                                        List<KnowledgeSuggestionRecord> knowledgeSuggestions,
                                        List<CmServiceLogSnapshotRecord> serviceLogs) {
         StringBuilder builder = new StringBuilder();
-        builder.append("请分析以下诊断事件，并且只返回 JSON 对象。所有自然语言字段值必须使用简体中文。\n");
+        builder.append("Analyze the incident below and return exactly one JSON object. All natural-language JSON values must be Simplified Chinese.\n");
+        builder.append("Output depth: provide a detailed operations diagnosis, not a short conclusion. Expand rootCause, recommendations, followUps and actionRecommendationText fully.\n");
+        builder.append("Incident full metadata:\n");
+        builder.append("id: ").append(incident.getId()).append("\n");
         builder.append("incidentNo: ").append(safe(incident.getIncidentNo())).append("\n");
+        builder.append("sourceType: ").append(safe(incident.getSourceType())).append("\n");
+        builder.append("sourceId: ").append(safe(incident.getSourceId())).append("\n");
+        builder.append("clusterName: ").append(safe(incident.getClusterName())).append("\n");
         builder.append("serviceType: ").append(safe(incident.getServiceType())).append("\n");
         builder.append("severity: ").append(safe(incident.getSeverity())).append("\n");
         builder.append("status: ").append(safe(incident.getStatus())).append("\n");
-        builder.append("title: ").append(truncate(safe(incident.getTitle()), 220)).append("\n");
-        builder.append("summary: ").append(truncate(safe(incident.getSummary()), 300)).append("\n");
-        builder.append("impactScope: ").append(truncate(safe(incident.getImpactScope()), 220)).append("\n");
+        builder.append("governanceStatus: ").append(safe(incident.getGovernanceStatus())).append("\n");
+        builder.append("title: ").append(safe(incident.getTitle())).append("\n");
+        builder.append("summary: ").append(safe(incident.getSummary())).append("\n");
+        builder.append("impactScope: ").append(safe(incident.getImpactScope())).append("\n");
         builder.append("owner: ").append(defaultIfBlank(incident.getOwner(), "UNKNOWN")).append("\n");
+        builder.append("eventFingerprint: ").append(safe(incident.getEventFingerprint())).append("\n");
+        builder.append("occurredAt: ").append(incident.getOccurredAt()).append("\n");
+        builder.append("firstSeenAt: ").append(incident.getFirstSeenAt()).append("\n");
+        builder.append("lastSeenAt: ").append(incident.getLastSeenAt()).append("\n");
+        builder.append("occurrenceCount: ").append(incident.getOccurrenceCount()).append("\n");
+        builder.append("suppressedUntil: ").append(incident.getSuppressedUntil()).append("\n");
+        builder.append("governanceNote: ").append(safe(incident.getGovernanceNote())).append("\n");
         builder.append("triggerBy: ").append(defaultIfBlank(triggerBy, "UNKNOWN")).append("\n");
-        builder.append("triggerReason: ").append(defaultIfBlank(triggerReason, "manual diagnosis")).append("\n");
-        builder.append("Current service logs (highest priority, same as frontend display):\n");
-        appendServiceLogs(builder, serviceLogs, 12, 520);
-        builder.append("Evidence:\n");
-        appendList(builder, incident.getEvidence(), 10, 320);
-        builder.append("Avoided actions:\n");
-        appendList(builder, incident.getAvoidedActions(), 3, 180);
+        builder.append("triggerReason: ").append(defaultIfBlank(triggerReason, "manual diagnosis from incident detail page")).append("\n");
+        builder.append("\nCurrent WARN/ERROR service logs (highest priority, same as frontend diagnosis input):\n");
+        appendServiceLogs(builder, serviceLogs);
+        builder.append("\nEvidence from incident detail page:\n");
+        appendList(builder, incident.getEvidence());
+        builder.append("\nAvoided actions from incident detail page:\n");
+        appendList(builder, incident.getAvoidedActions());
         if (knowledgeSuggestions != null && !knowledgeSuggestions.isEmpty()) {
-            builder.append("Knowledge matches:\n");
+            builder.append("\nKnowledge matches (already filtered by service domain and log/event keywords; still ignore any item that conflicts with logs):\n");
             for (KnowledgeSuggestionRecord suggestion : knowledgeSuggestions) {
                 builder.append("- title: ").append(defaultIfBlank(suggestion.getTitle(), "Untitled knowledge article"))
                     .append(" | domain: ").append(defaultIfBlank(suggestion.getDomain(), "UNKNOWN"))
-                    .append(" | summary: ").append(truncate(defaultIfBlank(suggestion.getSummary(), "N/A"), 240))
+                    .append(" | matchedKeywords: ").append(String.join(", ", suggestion.getMatchedKeywords()))
+                    .append(" | summary: ").append(defaultIfBlank(suggestion.getSummary(), "N/A"))
                     .append("\n");
             }
+        } else {
+            builder.append("\nKnowledge matches: none. Do not force a knowledge-base solution.\n");
         }
-        builder.append("Requirements:\n");
-        builder.append("- 只能基于当前事件证据和当前服务日志判断，不得编造事实。\n");
-        builder.append("- 最高优先级是上面的服务日志，尤其是 WARN/ERROR 及其上下文。\n");
-        builder.append("- rootCause 不能只写一句空泛结论，必须说明：发生了什么、直接原因是什么、日志里哪几条证据支持这个判断、影响到哪个节点或角色。\n");
-        builder.append("- recommendations 至少给出 3 条具体做法，按先后顺序描述，说明先做什么、再做什么、怎么验证。\n");
-        builder.append("- followUps 写待补充证据、风险提示或验证步骤，不要重复 recommendations。\n");
-        builder.append("- 只围绕当前服务日志诊断，不做跨组件推断；crossComponentPath 默认返回空字符串即可。\n");
-        builder.append("- 如果证据不足，明确指出缺什么，而不是猜测。\n");
+        builder.append("\nOperational answer contract:\n");
+        builder.append("- Use only WARN/ERROR service logs as the primary diagnosis evidence. If no WARN/ERROR log exists, say evidence is insufficient and list what to collect next.\n");
+        builder.append("- Do not use a knowledge article unless it is clearly related to the current service and log keywords.\n");
+        builder.append("- rootCause must include: symptom, exact log evidence, likely direct cause, impacted role/host, impact scope, reasoning, uncertainty, and actions not to take yet.\n");
+        builder.append("- recommendations must include at least 6 ordered operator steps. Each step must state purpose, concrete check/action, expected result, next decision, and risk/rollback note.\n");
+        builder.append("- followUps must include at least 4 missing evidence or validation items, not duplicates of recommendations.\n");
+        builder.append("- actionRecommendationText must be a complete SOP: pre-checks, read-only verification, low-risk remediation, post-action validation, rollback/escalation criteria.\n");
+        builder.append("- Do not perform cross-component speculation. crossComponentPath should be an empty string unless the current service logs explicitly prove it.\n");
         return builder.toString();
     }
 
     private void appendServiceLogs(StringBuilder builder,
-                                   List<CmServiceLogSnapshotRecord> serviceLogs,
-                                   int limit,
-                                   int maxItemLength) {
+                                   List<CmServiceLogSnapshotRecord> serviceLogs) {
         if (serviceLogs == null || serviceLogs.isEmpty()) {
             builder.append("- none\n");
             return;
         }
-        int count = 0;
         for (CmServiceLogSnapshotRecord value : serviceLogs) {
             builder.append("- ")
-                .append(renderServiceLogForPrompt(value, maxItemLength))
+                .append(renderServiceLogForPrompt(value))
                 .append("\n");
-            count++;
-            if (count >= limit) {
-                break;
-            }
         }
     }
 
-    private String renderServiceLogForPrompt(CmServiceLogSnapshotRecord value, int maxItemLength) {
-        String line = "["
+    private String renderServiceLogForPrompt(CmServiceLogSnapshotRecord value) {
+        return "["
             + defaultIfBlank(value.getLogType(), "LOG")
             + "] "
+            + "cluster=" + defaultIfBlank(value.getClusterName(), "UNKNOWN_CLUSTER")
+            + " | serviceName=" + defaultIfBlank(value.getServiceName(), "UNKNOWN_SERVICE")
+            + " | serviceType=" + defaultIfBlank(value.getServiceType(), "UNKNOWN")
+            + " | collectedAt=" + value.getCollectedAt()
+            + " | log="
             + defaultIfBlank(value.getLogText(), "empty");
-        return truncate(line, maxItemLength);
     }
 
-    private void appendList(StringBuilder builder, List<String> values, int limit, int maxItemLength) {
+    private void appendList(StringBuilder builder, List<String> values) {
         if (values == null || values.isEmpty()) {
             builder.append("- none\n");
             return;
         }
-        int count = 0;
         for (String value : values) {
-            builder.append("- ").append(truncate(safe(value), maxItemLength)).append("\n");
-            count++;
-            if (count >= limit) {
-                break;
-            }
+            builder.append("- ").append(safe(value)).append("\n");
         }
     }
 
@@ -312,15 +340,12 @@ public class LlmDiagnosisService {
     private DiagnosisBlueprint parseBlueprint(String content, String serviceType) throws IOException {
         String sanitized = sanitizeJsonBlock(content);
         JsonNode root = objectMapper.readTree(sanitized);
-        String rootCause = truncate(
-            readText(root, "rootCause", safe(serviceType) + " shows abnormal behavior and needs more evidence."),
-            4000
-        );
+        String rootCause = readText(root, "rootCause", safe(serviceType) + " shows abnormal behavior and needs more evidence.");
         double confidence = clamp(readDouble(root, "confidence", 0.66d), 0.1d, 0.95d);
         String impactLevel = normalizeOneOf(readText(root, "impactLevel", "SEV2"), Arrays.asList("SEV1", "SEV2", "SEV3"), "SEV2");
         String crossComponentPath = truncate(readText(root, "crossComponentPath", ""), 128);
-        List<String> recommendations = readTextList(root.get("recommendations"), 5, "Validate current evidence before expanding remediation scope.");
-        List<String> followUps = readTextList(root.get("followUps"), 4, "Collect more evidence and refresh the diagnosis.");
+        List<String> recommendations = readTextList(root.get("recommendations"), "Validate current evidence before expanding remediation scope.");
+        List<String> followUps = readTextList(root.get("followUps"), "Collect more evidence and refresh the diagnosis.");
         String actionName = truncate(readText(root, "actionName", "Generate diagnosis recommendation"), 128);
         String actionType = normalizeOneOf(
             readText(root, "actionType", "EVIDENCE_COLLECTION"),
@@ -365,9 +390,9 @@ public class LlmDiagnosisService {
             }
         }
 
-        String rootCause = truncate(normalized, 4000);
+        String rootCause = normalized;
         List<String> recommendations = new ArrayList<String>();
-        for (int index = 0; index < lines.size() && recommendations.size() < 5; index++) {
+        for (int index = 0; index < lines.size(); index++) {
             recommendations.add(lines.get(index));
         }
         if (recommendations.isEmpty()) {
@@ -424,8 +449,7 @@ public class LlmDiagnosisService {
         boolean hasReasoning = hasText(extractTextValue(message.get("reasoning_content")))
             || hasText(extractTextValue(message.get("reasoning")));
         if (hasReasoning) {
-            return "Response contains reasoning_content but choices[0].message.content is empty. "
-                + "Increase max output tokens or use a non-reasoning chat model for diagnosis JSON.";
+            return "Response contains reasoning_content but choices[0].message.content is empty. Increase max output tokens or use a non-reasoning chat model for diagnosis JSON.";
         }
         return "Response choices[0].message.content is empty.";
     }
@@ -465,15 +489,12 @@ public class LlmDiagnosisService {
         return node == null || !node.isBoolean() ? fallback : node.asBoolean();
     }
 
-    private List<String> readTextList(JsonNode node, int maxItems, String fallback) {
+    private List<String> readTextList(JsonNode node, String fallback) {
         List<String> values = new ArrayList<String>();
         if (node != null && node.isArray()) {
             for (JsonNode item : node) {
                 if (item != null && hasText(item.asText())) {
                     values.add(item.asText().trim());
-                }
-                if (values.size() >= maxItems) {
-                    break;
                 }
             }
         }
@@ -552,3 +573,6 @@ public class LlmDiagnosisService {
         return value == null ? "" : value.trim();
     }
 }
+
+
+

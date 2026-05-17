@@ -69,6 +69,11 @@ public class ClouderaManagerSettingsController {
         return logSnapshotService.getLatestLogs();
     }
 
+    @GetMapping("/log-collection-status")
+    public CmLogCollectionStatusResponse getLogCollectionStatus() {
+        return logCollectionScheduler.getStatus();
+    }
+
     private String defaultIfBlank(String value, String fallback) {
         return value == null || value.trim().isEmpty() ? fallback : value.trim();
     }

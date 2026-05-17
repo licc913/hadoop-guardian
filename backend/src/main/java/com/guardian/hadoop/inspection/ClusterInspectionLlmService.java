@@ -2,6 +2,7 @@ package com.guardian.hadoop.inspection;
 
 import com.guardian.hadoop.integration.llm.DiagnosisLlmSettingsEntity;
 import com.guardian.hadoop.integration.llm.DiagnosisLlmSettingsService;
+import com.guardian.hadoop.integration.llm.LlmCallRecordService;
 import java.net.SocketTimeoutException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -25,9 +26,12 @@ public class ClusterInspectionLlmService {
     private static final String REPORT_TITLE = "# 集群巡检报告";
 
     private final DiagnosisLlmSettingsService settingsService;
+    private final LlmCallRecordService llmCallRecordService;
 
-    public ClusterInspectionLlmService(DiagnosisLlmSettingsService settingsService) {
+    public ClusterInspectionLlmService(DiagnosisLlmSettingsService settingsService,
+                                       LlmCallRecordService llmCallRecordService) {
         this.settingsService = settingsService;
+        this.llmCallRecordService = llmCallRecordService;
     }
 
     public ClusterInspectionLlmResult generateReport(String clusterName, String inspectionContext) {
@@ -110,6 +114,7 @@ public class ClusterInspectionLlmService {
     }
 
     private String invokeForMarkdown(DiagnosisLlmSettingsEntity settings, List<Map<String, String>> messages) {
+        Long callRecordId = llmCallRecordService.start("INSPECTION", settings.getModel(), flattenMessages(messages));
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setBearerAuth(settings.getApiKey().trim());
@@ -124,17 +129,37 @@ public class ClusterInspectionLlmService {
         }
         payload.put("messages", messages);
 
-        @SuppressWarnings("unchecked")
-        Map<String, Object> response = createRestTemplate(settings).postForObject(
-            settings.getEndpoint().trim(),
-            new HttpEntity<Map<String, Object>>(payload, headers),
-            Map.class
-        );
-        String answer = extractContent(response);
-        if (!hasText(answer)) {
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "大模型已响应，但没有返回可用的巡检报告内容");
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> response = createRestTemplate(settings).postForObject(
+                settings.getEndpoint().trim(),
+                new HttpEntity<Map<String, Object>>(payload, headers),
+                Map.class
+            );
+            String answer = extractContent(response);
+            if (!hasText(answer)) {
+                llmCallRecordService.fail(callRecordId, "empty inspection response");
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "大模型已响应，但没有返回可用的巡检报告内容");
+            }
+            llmCallRecordService.finish(callRecordId, answer);
+            return answer.trim();
+        } catch (Exception exception) {
+            llmCallRecordService.fail(callRecordId, defaultIfBlank(exception.getMessage(), exception.getClass().getSimpleName()));
+            throw exception;
         }
-        return answer.trim();
+    }
+
+    private String flattenMessages(List<Map<String, String>> messages) {
+        StringBuilder builder = new StringBuilder();
+        for (Map<String, String> message : messages) {
+            if (builder.length() > 0) {
+                builder.append("\n\n");
+            }
+            builder.append(defaultIfBlank(message.get("role"), "unknown"))
+                .append(":\n")
+                .append(defaultIfBlank(message.get("content"), ""));
+        }
+        return builder.toString();
     }
 
     private List<Map<String, String>> buildSectionMessages(String prompt) {

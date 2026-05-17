@@ -15,7 +15,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -24,53 +26,53 @@ public class ClusterConfigSnapshotService {
     private final ClouderaManagerSettingsService settingsService;
     private final ClouderaManagerClient client;
     private final CmServiceLogSnapshotService serviceLogSnapshotService;
+    private final long cacheTtlMs;
+    private final Map<String, CacheEntry> contextCache = new ConcurrentHashMap<String, CacheEntry>();
 
     public ClusterConfigSnapshotService(ClouderaManagerSettingsService settingsService,
                                         ClouderaManagerClient client,
-                                        CmServiceLogSnapshotService serviceLogSnapshotService) {
+                                        CmServiceLogSnapshotService serviceLogSnapshotService,
+                                        @Value("${guardian.parameter-optimization.config-cache-ttl-ms:300000}") long cacheTtlMs) {
         this.settingsService = settingsService;
         this.client = client;
         this.serviceLogSnapshotService = serviceLogSnapshotService;
+        this.cacheTtlMs = cacheTtlMs;
     }
 
     public ParameterOptimizationContextPreview collect(String serviceType) {
+        return collect(serviceType, false);
+    }
+
+    public ParameterOptimizationContextPreview collect(String serviceType, boolean forceRefresh) {
         String normalizedType = normalizeServiceType(serviceType);
+        if (!forceRefresh && cacheTtlMs > 0L) {
+            CacheEntry cached = contextCache.get(normalizedType);
+            if (cached != null && System.currentTimeMillis() - cached.createdAtMillis <= cacheTtlMs) {
+                return cached.context;
+            }
+        }
+        ParameterOptimizationContextPreview context = collectFresh(normalizedType);
+        if (cacheTtlMs > 0L && context != null && context.isAvailable()) {
+            contextCache.put(normalizedType, new CacheEntry(context));
+        }
+        return context;
+    }
+
+    private ParameterOptimizationContextPreview collectFresh(String normalizedType) {
         ClouderaManagerSettingsEntity settings = settingsService.getEffectiveSettings();
         if (!settings.isEnabled()) {
-            return new ParameterOptimizationContextPreview(
-                false,
-                false,
-                "Cloudera Manager 未启用，无法采集当前组件配置。",
-                safe(settings.getClusterName()),
-                "",
-                normalizedType,
-                "",
-                "",
-                "",
-                Collections.<String, String>emptyMap(),
-                Collections.<ParameterConfigEntryRecord>emptyList(),
-                Collections.<String>emptyList()
-            );
+            return unavailable(false, "Cloudera Manager 未启用，无法采集当前组件配置。", settings, normalizedType);
         }
 
         try {
             JsonNode servicesNode = client.fetchCurrentServices(settings);
-            JsonNode services = servicesNode == null ? null : servicesNode.get("items");
-            JsonNode matchedService = findService(services, normalizedType);
+            JsonNode matchedService = findService(servicesNode == null ? null : servicesNode.get("items"), normalizedType);
             if (matchedService == null) {
-                return new ParameterOptimizationContextPreview(
+                return unavailable(
                     true,
-                    false,
                     "当前集群中未找到对应组件服务，请确认服务类型与 Cloudera Manager 中的 service name/type 是否一致。",
-                    safe(settings.getClusterName()),
-                    "",
-                    normalizedType,
-                    "",
-                    "",
-                    "",
-                    Collections.<String, String>emptyMap(),
-                    Collections.<ParameterConfigEntryRecord>emptyList(),
-                    Collections.<String>emptyList()
+                    settings,
+                    normalizedType
                 );
             }
 
@@ -90,7 +92,7 @@ public class ClusterConfigSnapshotService {
 
             String message = scopedConfigEntries.isEmpty()
                 ? "已连接 Cloudera Manager，但当前服务没有返回可展示的非敏感配置参数。"
-                : "已采集当前组件在 Cloudera Manager 中的服务级与角色配置组参数，以及最近服务日志信号。";
+                : "已采集当前组件的服务级配置、角色配置组参数和最近服务日志信号。";
 
             return new ParameterOptimizationContextPreview(
                 true,
@@ -113,21 +115,33 @@ public class ClusterConfigSnapshotService {
                 recentSignals
             );
         } catch (Exception exception) {
-            return new ParameterOptimizationContextPreview(
+            return unavailable(
                 true,
-                false,
                 "配置采集失败: " + defaultIfBlank(exception.getMessage(), exception.getClass().getSimpleName()),
-                safe(settings.getClusterName()),
-                "",
-                normalizedType,
-                "",
-                "",
-                "",
-                Collections.<String, String>emptyMap(),
-                Collections.<ParameterConfigEntryRecord>emptyList(),
-                Collections.<String>emptyList()
+                settings,
+                normalizedType
             );
         }
+    }
+
+    private ParameterOptimizationContextPreview unavailable(boolean configured,
+                                                            String message,
+                                                            ClouderaManagerSettingsEntity settings,
+                                                            String serviceType) {
+        return new ParameterOptimizationContextPreview(
+            configured,
+            false,
+            message,
+            settings == null ? "" : safe(settings.getClusterName()),
+            "",
+            serviceType,
+            "",
+            "",
+            "",
+            Collections.<String, String>emptyMap(),
+            Collections.<ParameterConfigEntryRecord>emptyList(),
+            Collections.<String>emptyList()
+        );
     }
 
     private JsonNode findService(JsonNode items, String serviceType) {
@@ -138,7 +152,8 @@ public class ClusterConfigSnapshotService {
         for (JsonNode item : items) {
             String type = normalizeServiceType(text(item, "type"));
             String name = normalizeServiceType(text(item, "name"));
-            if (expected.equals(type) || expected.equals(name)) {
+            String displayName = normalizeServiceType(text(item, "displayName"));
+            if (expected.equals(type) || expected.equals(name) || expected.equals(displayName)) {
                 return item;
             }
         }
@@ -161,11 +176,13 @@ public class ClusterConfigSnapshotService {
                     continue;
                 }
                 String roleType = firstNonBlank(text(groupNode, "roleType"), text(groupNode, "base"));
-                JsonNode groupConfigNode;
-                try {
-                    groupConfigNode = client.fetchRoleConfigGroupConfig(settings, serviceName, groupName);
-                } catch (Exception exception) {
-                    groupConfigNode = groupNode.get("config");
+                JsonNode groupConfigNode = firstConfigNode(groupNode);
+                if (!hasConfigItems(groupConfigNode)) {
+                    try {
+                        groupConfigNode = client.fetchRoleConfigGroupConfig(settings, serviceName, groupName);
+                    } catch (Exception ignored) {
+                        groupConfigNode = firstConfigNode(groupNode);
+                    }
                 }
                 result.addAll(extractScopedEntries(groupConfigNode, "ROLE_CONFIG_GROUP", groupName, roleType));
             }
@@ -180,14 +197,27 @@ public class ClusterConfigSnapshotService {
             .collect(Collectors.toList());
     }
 
+    private JsonNode firstConfigNode(JsonNode node) {
+        if (node == null) {
+            return null;
+        }
+        JsonNode directConfig = node.get("config");
+        if (directConfig != null && !directConfig.isNull()) {
+            return directConfig;
+        }
+        return node;
+    }
+
+    private boolean hasConfigItems(JsonNode node) {
+        JsonNode items = node == null ? null : node.get("items");
+        return items != null && items.isArray() && items.size() > 0;
+    }
+
     private List<ParameterConfigEntryRecord> extractScopedEntries(JsonNode configNode,
                                                                   String scopeType,
                                                                   String scopeName,
                                                                   String roleType) {
-        if (configNode == null) {
-            return Collections.emptyList();
-        }
-        JsonNode items = configNode.get("items");
+        JsonNode items = configNode == null ? null : configNode.get("items");
         if (items == null || !items.isArray()) {
             return Collections.emptyList();
         }
@@ -224,8 +254,7 @@ public class ClusterConfigSnapshotService {
                 sourceMap.put(key, entry.getValueSource());
                 continue;
             }
-            String currentSource = sourceMap.get(key);
-            if (shouldReplace(currentSource, entry.getValueSource())) {
+            if (shouldReplace(sourceMap.get(key), entry.getValueSource())) {
                 result.put(key, entry.getConfigValue());
                 sourceMap.put(key, entry.getValueSource());
             }
@@ -240,6 +269,9 @@ public class ClusterConfigSnapshotService {
         if (!hasText(nextSource)) {
             return false;
         }
+        if ("UNSET".equalsIgnoreCase(currentSource) && !"UNSET".equalsIgnoreCase(nextSource)) {
+            return true;
+        }
         return "DEFAULT".equalsIgnoreCase(currentSource) && !"DEFAULT".equalsIgnoreCase(nextSource);
     }
 
@@ -248,24 +280,10 @@ public class ClusterConfigSnapshotService {
         if (hasText(value)) {
             return new ConfigValueCandidate(value, "EXPLICIT");
         }
-        JsonNode valueNode = item.get("value");
+        JsonNode valueNode = item == null ? null : item.get("value");
         if (valueNode != null && !valueNode.isNull() && !valueNode.isMissingNode()) {
-            if (valueNode.isArray()) {
-                StringBuilder builder = new StringBuilder();
-                for (JsonNode child : valueNode) {
-                    if (child == null || child.isNull()) {
-                        continue;
-                    }
-                    if (builder.length() > 0) {
-                        builder.append(',');
-                    }
-                    builder.append(child.asText(""));
-                }
-                if (hasText(builder.toString())) {
-                    return new ConfigValueCandidate(builder.toString(), "EXPLICIT");
-                }
-            } else {
-                String rendered = valueNode.isValueNode() ? valueNode.asText("") : valueNode.toString();
+            String rendered = renderJsonValue(valueNode);
+            if (hasText(rendered)) {
                 return new ConfigValueCandidate(rendered, "EXPLICIT");
             }
         }
@@ -280,6 +298,23 @@ public class ClusterConfigSnapshotService {
             return new ConfigValueCandidate(fallback, "DEFAULT");
         }
         return new ConfigValueCandidate("", "");
+    }
+
+    private String renderJsonValue(JsonNode valueNode) {
+        if (valueNode == null || valueNode.isNull()) {
+            return "";
+        }
+        if (valueNode.isArray()) {
+            List<String> values = new ArrayList<String>();
+            for (JsonNode child : valueNode) {
+                String value = renderJsonValue(child);
+                if (hasText(value)) {
+                    values.add(value);
+                }
+            }
+            return String.join(",", values);
+        }
+        return valueNode.isValueNode() ? valueNode.asText("") : valueNode.toString();
     }
 
     private boolean isSensitiveKey(String key) {
@@ -300,8 +335,8 @@ public class ClusterConfigSnapshotService {
         if (serviceType == null) {
             return "HDFS";
         }
-        String normalized = serviceType.trim().toUpperCase(Locale.ROOT);
-        if ("HIVE".equals(normalized) || "HIVE_ON_TEZ".equals(normalized)) {
+        String normalized = serviceType.trim().toUpperCase(Locale.ROOT).replace('-', '_').replace(' ', '_');
+        if ("HIVE".equals(normalized) || "HIVE_ON_TEZ".equals(normalized) || "HIVEONTEZ".equals(normalized)) {
             return "HIVE_ON_TEZ";
         }
         return normalized;
@@ -353,6 +388,16 @@ public class ClusterConfigSnapshotService {
         private ConfigValueCandidate(String value, String source) {
             this.value = value;
             this.source = source;
+        }
+    }
+
+    private static final class CacheEntry {
+        private final ParameterOptimizationContextPreview context;
+        private final long createdAtMillis;
+
+        private CacheEntry(ParameterOptimizationContextPreview context) {
+            this.context = context;
+            this.createdAtMillis = System.currentTimeMillis();
         }
     }
 }

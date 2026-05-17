@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { LoadingButton } from "../components/LoadingButton";
 import { SeverityBadge } from "../components/SeverityBadge";
 import {
   getClouderaManagerCurrentStatus,
@@ -25,7 +26,8 @@ const serviceLabelMap: Record<string, string> = {
   RANGER: "Ranger",
   SPARK: "Spark",
   KAFKA: "Kafka",
-  CROSS_COMPONENT: "跨组件"
+  ATLAS: "Atlas",
+  HUE: "Hue"
 };
 
 const statusLabelMap: Record<string, string> = {
@@ -68,19 +70,19 @@ function isHealthyService(service: CmServiceStatus) {
 function buildRiskSignals(summary: DashboardSummary | null, systemStatus: SystemStatus | null, unhealthyServices: CmServiceStatus[]) {
   const signals: string[] = [];
   if (!systemStatus?.clouderaManagerEnabled) {
-    signals.push("Cloudera Manager 尚未启用，当前无法自动生成实时诊断队列。");
+    signals.push("Cloudera Manager 尚未启用，当前无法自动补齐实时事件队列。");
   }
   if (unhealthyServices.length > 0) {
-    signals.push(`当前实时快照发现 ${unhealthyServices.length} 个服务存在异常角色或日志告警。`);
+    signals.push(`当前快照发现 ${unhealthyServices.length} 个异常服务，后台会继续补抓角色日志。`);
   }
   if ((summary?.criticalIncidents ?? 0) > 0) {
     signals.push("诊断队列中存在严重事件，请优先处理影响范围最大的服务。");
   }
   if ((summary?.diagnosingIncidents ?? 0) > 0) {
-    signals.push("部分事件正在诊断中，可继续补充角色日志、JMX 与知识库证据。");
+    signals.push("部分事件正在诊断中，可继续补充日志、JMX 和知识库证据。");
   }
   if (signals.length === 0) {
-    signals.push("当前没有新增高优先级风险信号，可以继续观察下一次实时采集结果。");
+    signals.push("当前没有新的高优先级风险信号，可以继续观察下一轮采集结果。");
   }
   return signals;
 }
@@ -93,10 +95,10 @@ function buildCurrentStatusLead(currentStatus: CmCurrentStatusResponse | null, u
     return currentStatus.details || currentStatus.message;
   }
   if (unhealthyServices.length > 0) {
-    return `当前实时快照显示 ${unhealthyServices.length} 个服务存在异常角色或 ERROR/WARN 日志，已可进入诊断队列。`;
+    return `当前实时快照发现 ${unhealthyServices.length} 个服务存在异常角色或 WARN/ERROR 日志，异常服务会继续进入诊断队列。`;
   }
   if (currentStatus.serviceCount > 0) {
-    return `当前实时快照已返回 ${currentStatus.serviceCount} 个服务，暂未发现需要进入诊断队列的异常服务。`;
+    return `当前实时快照已返回 ${currentStatus.serviceCount} 个服务，暂未发现需要进入诊断队列的新异常服务。`;
   }
   return currentStatus.message;
 }
@@ -117,6 +119,7 @@ export function IncidentListPage() {
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [openingIncidentId, setOpeningIncidentId] = useState<number | null>(null);
 
   useEffect(() => {
     void loadDashboard();
@@ -141,11 +144,7 @@ export function IncidentListPage() {
         getSystemStatus()
       ]);
 
-      if (summaryResult.status === "fulfilled") {
-        setSummary(summaryResult.value);
-      } else {
-        setSummary(null);
-      }
+      setSummary(summaryResult.status === "fulfilled" ? summaryResult.value : null);
 
       if (incidentsResult.status === "fulfilled") {
         setIncidents(incidentsResult.value ?? []);
@@ -154,11 +153,7 @@ export function IncidentListPage() {
         setLoadError("实时诊断队列暂时不可用，请稍后重试。");
       }
 
-      if (statusResult.status === "fulfilled") {
-        setSystemStatus(statusResult.value);
-      } else {
-        setSystemStatus(null);
-      }
+      setSystemStatus(statusResult.status === "fulfilled" ? statusResult.value : null);
 
       if (
         summaryResult.status === "rejected" &&
@@ -169,6 +164,7 @@ export function IncidentListPage() {
       }
     } finally {
       setRefreshing(false);
+      setOpeningIncidentId(null);
     }
   }
 
@@ -203,15 +199,16 @@ export function IncidentListPage() {
           <p className="eyebrow">事件指挥中心</p>
           <h2>只展示当前实时异常，并将未关闭事件持续保留在诊断队列</h2>
           <p className="lead">
-            首页不再混入历史告警。系统会先采集 Cloudera Manager 当前状态与角色日志，再把仍需处理的实时事件放入诊断队列；
-            只要事件没有被关闭，就会继续保留在队列里。
+            首页只关注当前实时异常。系统会先采集 Cloudera Manager 当前状态，再由后台继续补抓服务日志。
+            只要事件没有被关闭，就会持续保留在诊断队列中。
           </p>
           <div className="detail-actions">
             <Link className="primary-button" to="/settings">管理集成配置</Link>
-            <button className="secondary-button" disabled={refreshing} onClick={() => void loadDashboard()} type="button">
-              {refreshing ? "刷新中..." : "刷新视图"}
-            </button>
+            <LoadingButton className="secondary-button" loading={refreshing} loadingText="正在刷新视图" onClick={() => void loadDashboard()}>
+              刷新视图
+            </LoadingButton>
           </div>
+          {openingIncidentId != null ? <div className="flash-message">正在打开事件详情...</div> : null}
         </div>
 
         <div className="hero-side">
@@ -261,6 +258,9 @@ export function IncidentListPage() {
           </div>
 
           <p className="compact-lead">{currentStatusLead}</p>
+          <p className="muted">
+            这里展示服务快照；真正进入诊断队列，需要后台完成实时事件生成和服务日志补抓。
+          </p>
           {cmCurrentStatus?.endpoint ? (
             <div className="inline-metadata">
               <span>{`接口：${cmCurrentStatus.endpoint}`}</span>
@@ -325,9 +325,15 @@ export function IncidentListPage() {
               <div className="inline-metadata">
                 <span>{`集群：${queueHead.clusterName}`}</span>
                 <span>{`负责人：${queueHead.owner || "未分配"}`}</span>
-                <span>{`最近采集时间：${formatTime(queueHead.occurredAt)}`}</span>
+                <span>{`发生时间：${formatTime(queueHead.occurredAt)}`}</span>
               </div>
-              <Link className="text-link" to={`/incidents/${queueHead.id}`}>打开事件详情</Link>
+              <Link
+                className={`text-link ${openingIncidentId === queueHead.id ? "text-link-pending" : ""}`}
+                to={`/incidents/${queueHead.id}`}
+                onClick={() => setOpeningIncidentId(queueHead.id)}
+              >
+                {openingIncidentId === queueHead.id ? "正在打开..." : "打开事件详情"}
+              </Link>
             </div>
           ) : (
             <div className="empty-state">当前没有需要进入诊断队列的实时异常服务。</div>
@@ -335,68 +341,77 @@ export function IncidentListPage() {
         </article>
       </section>
 
-      <section className="overview-grid">
-        <article className="panel">
-          <div className="panel-head">
-            <div>
-              <p className="eyebrow">覆盖情况</p>
-              <h3>实时队列分布</h3>
-            </div>
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <p className="eyebrow">实时事件队列</p>
+            <h3>待处理事件</h3>
           </div>
+          <span className="muted">{`共 ${incidents.length} 条`}</span>
+        </div>
 
-          {serviceStats.length === 0 ? (
-            <div className="empty-state">当前还没有可用的实时队列分布数据。</div>
-          ) : (
-            <div className="distribution-list">
-              {serviceStats.map((item) => (
-                <div key={item.label} className="distribution-row">
-                  <span>{item.label}</span>
-                  <div className="distribution-bar">
-                    <div className="distribution-fill" style={{ width: `${Math.max(20, item.count * 28)}px` }} />
+        {loadError ? <div className="error-message">{loadError}</div> : null}
+
+        {incidents.length === 0 ? (
+          <div className="empty-state">
+            当前没有待处理事件。若快照里已显示异常服务，请等待后台补抓日志并生成实时事件。
+          </div>
+        ) : (
+          <div className="incident-table">
+            {incidents.map((incident, index) => (
+              <Link
+                key={incident.id}
+                className={`incident-row ${openingIncidentId === incident.id ? "incident-row-pending" : ""}`}
+                to={`/incidents/${incident.id}`}
+                onClick={() => setOpeningIncidentId(incident.id)}
+              >
+                <span className="incident-order">{String(index + 1).padStart(2, "0")}</span>
+                <div className="row-copy stack-sm">
+                  <div className="inline-metadata">
+                    <SeverityBadge value={incident.severity} />
+                    <span>{serviceLabelMap[incident.serviceType] ?? incident.serviceType}</span>
+                    <span>{statusLabelMap[incident.status] ?? incident.status}</span>
+                    <span>{incident.incidentNo}</span>
                   </div>
-                  <strong>{item.count}</strong>
+                  <strong>{incident.title}</strong>
+                  <p className="compact-lead">{incident.summary}</p>
+                  <div className="inline-metadata">
+                    <span>{`集群：${incident.clusterName}`}</span>
+                    <span>{`负责人：${incident.owner || "未分配"}`}</span>
+                    <span>{`最近采集：${formatTime(incident.lastSeenAt || incident.occurredAt)}`}</span>
+                  </div>
                 </div>
-              ))}
-            </div>
-          )}
-        </article>
+                <span className="incident-open-state">
+                  {openingIncidentId === incident.id ? "打开中..." : "查看详情"}
+                </span>
+              </Link>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="panel">
         <div className="panel-head">
           <div>
-            <p className="eyebrow">实时诊断队列</p>
-            <h3>待诊断 / 待处理事件队列</h3>
+            <p className="eyebrow">风险分布</p>
+            <h3>当前队列按服务分布</h3>
           </div>
         </div>
-
-        {loadError ? <div className="empty-state">{loadError}</div> : null}
-        {!loadError && incidents.length === 0 ? (
-          <div className="empty-state">当前没有实时异常事件。请先在设置页执行“保存并采集当前状态”。</div>
-        ) : null}
-
-        <div className="incident-table">
-          {incidents.map((incident, index) => (
-            <Link key={incident.id} className="incident-row" to={`/incidents/${incident.id}`}>
-              <div className="incident-order">{String(index + 1).padStart(2, "0")}</div>
-              <div className="incident-main">
-                <p className="incident-no">{incident.incidentNo}</p>
-                <h4>{incident.title}</h4>
-                <p className="row-copy">{incident.summary}</p>
-                <div className="inline-metadata">
-                  <span>{`集群：${incident.clusterName}`}</span>
-                  <span>{`负责人：${incident.owner || "未分配"}`}</span>
-                  <span>{`最近采集时间：${formatTime(incident.occurredAt)}`}</span>
+        {serviceStats.length === 0 ? (
+          <div className="empty-state">队列里暂无事件，暂无服务分布可展示。</div>
+        ) : (
+          <div className="distribution-list">
+            {serviceStats.map((item) => (
+              <div className="distribution-row" key={item.label}>
+                <span>{item.label}</span>
+                <div className="distribution-bar">
+                  <div className="distribution-fill" style={{ width: `${Math.min(100, item.count * 12)}%` }} />
                 </div>
+                <strong>{item.count}</strong>
               </div>
-              <div className="row-meta">
-                <SeverityBadge value={incident.severity} />
-                <span>{serviceLabelMap[incident.serviceType] ?? incident.serviceType}</span>
-                <span>{statusLabelMap[incident.status] ?? incident.status}</span>
-              </div>
-            </Link>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </section>
     </div>
   );

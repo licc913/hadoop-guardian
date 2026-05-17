@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   ActionRecommendation,
   AiGuidance,
   ApprovalRecord,
@@ -6,8 +6,8 @@ import type {
   ClouderaManagerSettings,
   ClouderaManagerSyncResponse,
   ClusterInspectionReport,
-  CrossComponentAnalysis,
   CmCurrentStatusResponse,
+  CmLogCollectionStatus,
   CmServiceLogSnapshot,
   CurrentUser,
   DashboardSummary,
@@ -26,11 +26,15 @@ import type {
   KnowledgeArticleRequest,
   KnowledgeQuickEntryRequest,
   KnowledgeSuggestion,
+  LlmCallRecord,
   LlmChatMessage,
   LlmPromptResponse,
+  CmConfigCheckResponse,
+  OperationTaskStatusResponse,
   ParameterOptimizationContextPreview,
   ParameterOptimizationRequest,
   ParameterOptimizationResult,
+  ParameterOptimizationTaskResponse,
   PostmortemRecord,
   PostmortemUpsertRequest,
   SqlOptimizationRequest,
@@ -77,6 +81,22 @@ async function apiFetchWithTimeout(path: string, timeoutMs: number, init?: Reque
   }
 }
 
+async function buildApiError(response: Response): Promise<string> {
+  const fallback = `API failed: ${response.status}`;
+  try {
+    const contentType = response.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      const body = await response.json() as { message?: string; details?: string; error?: string };
+      const details = [body.message, body.details, body.error].filter(Boolean).join(" | ");
+      return details ? `${fallback} | ${details}` : fallback;
+    }
+    const text = (await response.text()).trim();
+    return text ? `${fallback} | ${text}` : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 async function readJson<T>(path: string): Promise<T> {
   const response = await apiFetch(path);
   if (!response.ok) {
@@ -97,20 +117,16 @@ async function writeJson<T>(path: string, method: string, payload?: unknown): Pr
   return (await response.json()) as T;
 }
 
-async function buildApiError(response: Response): Promise<string> {
-  const fallback = `API failed: ${response.status}`;
-  try {
-    const contentType = response.headers.get("content-type") ?? "";
-    if (contentType.includes("application/json")) {
-      const body = await response.json() as { message?: string; details?: string; error?: string };
-      const details = [body.message, body.details, body.error].filter(Boolean).join(" | ");
-      return details ? `${fallback} | ${details}` : fallback;
-    }
-    const text = (await response.text()).trim();
-    return text ? `${fallback} | ${text}` : fallback;
-  } catch {
-    return fallback;
+async function writeJsonWithTimeout<T>(path: string, method: string, timeoutMs: number, payload?: unknown): Promise<T> {
+  const response = await apiFetchWithTimeout(path, timeoutMs, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: payload === undefined ? undefined : JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    throw new Error(await buildApiError(response));
   }
+  return (await response.json()) as T;
 }
 
 export function getDashboardSummary(): Promise<DashboardSummary> {
@@ -119,6 +135,14 @@ export function getDashboardSummary(): Promise<DashboardSummary> {
 
 export function getSystemStatus(): Promise<SystemStatus> {
   return readJson("/system/status");
+}
+
+export function getOperationTasks(): Promise<OperationTaskStatusResponse> {
+  return readJson("/ops/tasks");
+}
+
+export function getLlmCallRecords(limit = 20): Promise<LlmCallRecord[]> {
+  return readJson(`/llm/calls?limit=${limit}`);
 }
 
 export function getIncidents(): Promise<Incident[]> {
@@ -214,24 +238,12 @@ export function getClouderaManagerCurrentLogs(): Promise<CmServiceLogSnapshot[]>
   return readJson("/integrations/cloudera-manager/current-logs");
 }
 
+export function getClouderaManagerLogCollectionStatus(): Promise<CmLogCollectionStatus> {
+  return readJson("/integrations/cloudera-manager/log-collection-status");
+}
+
 export function getIncidentServiceLogs(incidentId: number): Promise<CmServiceLogSnapshot[]> {
   return readJson(`/incidents/${incidentId}/service-logs`);
-}
-
-export function getCrossComponentAnalysis(incidentId: number): Promise<CrossComponentAnalysis> {
-  return readJson(`/incidents/${incidentId}/cross-component-analysis`);
-}
-
-async function writeJsonWithTimeout<T>(path: string, method: string, timeoutMs: number, payload?: unknown): Promise<T> {
-  const response = await apiFetchWithTimeout(path, timeoutMs, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: payload === undefined ? undefined : JSON.stringify(payload)
-  });
-  if (!response.ok) {
-    throw new Error(await buildApiError(response));
-  }
-  return (await response.json()) as T;
 }
 
 export function getClouderaManagerSettings(): Promise<ClouderaManagerSettings> {
@@ -317,12 +329,24 @@ export function getParameterOptimizationResult(recordId: number): Promise<Parame
   return readJson(`/parameter-optimization/${recordId}`);
 }
 
-export function getParameterOptimizationContext(serviceType: string): Promise<ParameterOptimizationContextPreview> {
-  return readJson(`/parameter-optimization/context?serviceType=${encodeURIComponent(serviceType)}`);
+export function getParameterOptimizationContext(serviceType: string, forceRefresh = false): Promise<ParameterOptimizationContextPreview> {
+  return readJson(`/parameter-optimization/context?serviceType=${encodeURIComponent(serviceType)}&forceRefresh=${forceRefresh ? "true" : "false"}`);
+}
+
+export function checkParameterOptimizationCmConfig(serviceType: string): Promise<CmConfigCheckResponse> {
+  return readJson(`/parameter-optimization/cm-config-check?serviceType=${encodeURIComponent(serviceType)}`);
 }
 
 export function analyzeParameterOptimization(payload: ParameterOptimizationRequest): Promise<ParameterOptimizationResult> {
   return writeJsonWithTimeout("/parameter-optimization/analyze", "POST", 180000, payload);
+}
+
+export function startParameterOptimizationTask(payload: ParameterOptimizationRequest): Promise<ParameterOptimizationTaskResponse> {
+  return writeJson("/parameter-optimization/tasks", "POST", payload);
+}
+
+export function getParameterOptimizationTask(taskId: string): Promise<ParameterOptimizationTaskResponse> {
+  return readJson(`/parameter-optimization/tasks/${encodeURIComponent(taskId)}`);
 }
 
 export async function downloadClusterInspectionReportDocx(reportId: number): Promise<Blob> {
@@ -358,3 +382,4 @@ export async function getCurrentUser(): Promise<CurrentUser> {
 export function logout() {
   setAuthToken(null);
 }
+

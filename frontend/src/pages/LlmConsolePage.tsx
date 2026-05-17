@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { LoadingButton } from "../components/LoadingButton";
 import { askLlmQuestion } from "../lib/api";
 import type { LlmChatMessage } from "../lib/types";
 
@@ -274,9 +275,9 @@ export function LlmConsolePage() {
               placeholder="输入你的问题。支持连续追问，也可以粘贴 SQL、角色日志、接口响应或脚本需求。"
             />
             <div className="detail-actions">
-              <button className="primary-button" type="button" disabled={sending} onClick={() => void handleSend()}>
-                {sending ? "发送中..." : "发送提问"}
-              </button>
+              <LoadingButton className="primary-button" loading={sending} loadingText="正在等待模型回复" onClick={() => void handleSend()}>
+                发送提问
+              </LoadingButton>
             </div>
             {error ? <div className="error-message">{error}</div> : null}
           </div>

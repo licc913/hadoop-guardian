@@ -2,6 +2,7 @@ package com.guardian.hadoop.tuning;
 
 import com.guardian.hadoop.integration.llm.DiagnosisLlmSettingsEntity;
 import com.guardian.hadoop.integration.llm.DiagnosisLlmSettingsService;
+import com.guardian.hadoop.integration.llm.LlmCallRecordService;
 import com.guardian.hadoop.knowledge.KnowledgeSuggestionRecord;
 import com.guardian.hadoop.knowledge.KnowledgeSuggestionService;
 import java.net.SocketTimeoutException;
@@ -29,22 +30,22 @@ import org.springframework.web.client.RestTemplate;
 public class ParameterOptimizationLlmService {
 
     private static final Logger logger = LoggerFactory.getLogger(ParameterOptimizationLlmService.class);
-    private static final Pattern SECTION_PATTERN = Pattern.compile(
-        "^【(参数问题总结|建议调整项|为什么这样优化|预期收益|风险提示|验证步骤)】\\s*$",
-        Pattern.MULTILINE
-    );
+    private static final Pattern SECTION_PATTERN = Pattern.compile("^【([^】]+)】\\s*$", Pattern.MULTILINE);
     private static final int MAX_CONFIG_PROMPT_CHARS = 14000;
     private static final int MAX_SIGNAL_COUNT = 10;
-    private static final int MAX_SIGNAL_CHARS = 260;
+    private static final int MAX_SIGNAL_CHARS = 300;
     private static final int MAX_KNOWLEDGE_SUMMARY = 220;
 
     private final DiagnosisLlmSettingsService settingsService;
     private final KnowledgeSuggestionService knowledgeSuggestionService;
+    private final LlmCallRecordService llmCallRecordService;
 
     public ParameterOptimizationLlmService(DiagnosisLlmSettingsService settingsService,
-                                           KnowledgeSuggestionService knowledgeSuggestionService) {
+                                           KnowledgeSuggestionService knowledgeSuggestionService,
+                                           LlmCallRecordService llmCallRecordService) {
         this.settingsService = settingsService;
         this.knowledgeSuggestionService = knowledgeSuggestionService;
+        this.llmCallRecordService = llmCallRecordService;
     }
 
     public ParameterOptimizationLlmOutcome analyze(ParameterOptimizationRequest request,
@@ -60,6 +61,7 @@ public class ParameterOptimizationLlmService {
         }
 
         String prompt = buildPrompt(request, context, ruleAnalysis);
+        Long callRecordId = llmCallRecordService.start("PARAMETER_OPTIMIZATION", settings.getModel(), prompt);
         try {
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
@@ -83,11 +85,14 @@ public class ParameterOptimizationLlmService {
             );
             String content = extractContent(response);
             if (!hasText(content)) {
+                llmCallRecordService.fail(callRecordId, "empty model response");
                 return fallback(ruleAnalysis, context, request, "RULE_FALLBACK", settings.getModel(), "大模型调用成功，但没有返回可解析内容。");
             }
+            llmCallRecordService.finish(callRecordId, content);
             return parseContent(content, settings.getModel(), ruleAnalysis, context, request);
         } catch (RestClientResponseException exception) {
             logger.warn("Parameter optimization request failed", exception);
+            llmCallRecordService.fail(callRecordId, "HTTP " + exception.getRawStatusCode() + " " + exception.getStatusText());
             return fallback(
                 ruleAnalysis,
                 context,
@@ -98,20 +103,15 @@ public class ParameterOptimizationLlmService {
             );
         } catch (ResourceAccessException exception) {
             logger.warn("Parameter optimization request timed out or was unreachable", exception);
+            llmCallRecordService.fail(callRecordId, defaultIfBlank(exception.getMessage(), "resource access error"));
             Throwable root = exception.getMostSpecificCause();
-            if (root instanceof SocketTimeoutException) {
-                return fallback(ruleAnalysis, context, request, "RULE_FALLBACK", settings.getModel(), "大模型参数优化超时，已回退到规则分析结果。");
-            }
-            return fallback(
-                ruleAnalysis,
-                context,
-                request,
-                "RULE_FALLBACK",
-                settings.getModel(),
-                defaultIfBlank(exception.getMessage(), "大模型参数优化调用失败。")
-            );
+            String reason = root instanceof SocketTimeoutException
+                ? "大模型参数优化超时，已回退到规则分析结果。"
+                : defaultIfBlank(exception.getMessage(), "大模型参数优化调用失败。");
+            return fallback(ruleAnalysis, context, request, "RULE_FALLBACK", settings.getModel(), reason);
         } catch (Exception exception) {
             logger.warn("Failed to generate parameter optimization", exception);
+            llmCallRecordService.fail(callRecordId, exception.getClass().getSimpleName() + ": " + defaultIfBlank(exception.getMessage(), "unknown error"));
             return fallback(
                 ruleAnalysis,
                 context,
@@ -197,7 +197,7 @@ public class ParameterOptimizationLlmService {
         String serviceType = normalizeServiceType(request.getServiceType());
         List<KnowledgeSuggestionRecord> suggestions = collectKnowledge(serviceType, request, context);
         StringBuilder builder = new StringBuilder();
-        builder.append("请针对以下组件参数做优化分析，并严格按固定章节输出。\n");
+        builder.append("请针对以下 Hadoop/CDP 组件参数做优化分析。不要返回 JSON，不要返回 Markdown 代码块。\n");
         builder.append("集群名称: ").append(defaultIfBlank(context == null ? null : context.getClusterName(), "未知")).append('\n');
         builder.append("服务类型: ").append(serviceType).append('\n');
         builder.append("服务名称: ").append(defaultIfBlank(context == null ? null : context.getServiceName(), "未知")).append('\n');
@@ -207,7 +207,7 @@ public class ParameterOptimizationLlmService {
             .append(" / ")
             .append(defaultIfBlank(context == null ? null : context.getHealthSummary(), "未知"))
             .append('\n');
-        builder.append("优化目标: ").append(defaultIfBlank(request.getOptimizationGoal(), "提升组件稳定性与资源利用率")).append('\n');
+        builder.append("优化目标: ").append(defaultIfBlank(request.getOptimizationGoal(), "提升组件稳定性、资源利用率与故障恢复能力")).append('\n');
         builder.append("当前症状: ").append(defaultIfBlank(request.getCurrentSymptoms(), "未补充")).append("\n\n");
 
         builder.append("【当前组件配置参数】\n");
@@ -243,7 +243,7 @@ public class ParameterOptimizationLlmService {
         builder.append("- 必须先判断当前现象是否真的由参数导致；如果更像网络、SQL、数据质量、容量规划或上下游组件问题，要明确指出，不要强行给参数建议。\n");
         builder.append("- 建议调整项必须写明参数名、当前值、建议值或建议方向，以及为什么这样调整。\n");
         builder.append("- 调参依据必须尽量引用当前配置、当前日志、管理员提供的源码线索和知识库内容。\n");
-        builder.append("- 如果当前证据不足以给出具体值，应明确写成“建议方向/建议范围”，不要编造确定值。\n");
+        builder.append("- 如果当前证据不足以给出具体值，应写成“建议方向/建议范围”，不要编造确定值。\n");
         builder.append("- 输出必须使用简体中文，不能返回 JSON，不能返回 Markdown 代码块。\n");
         builder.append("- 必须严格按以下 6 个章节输出：\n");
         builder.append("【参数问题总结】\n【建议调整项】\n【为什么这样优化】\n【预期收益】\n【风险提示】\n【验证步骤】\n");
@@ -263,7 +263,7 @@ public class ParameterOptimizationLlmService {
             builder.append("- 如果更适合先优化 SQL、文件布局或数据倾斜处理，要明确指出，不要只给参数建议。\n");
         } else if ("IMPALA".equals(serviceType)) {
             builder.append("- 重点从 admission control、查询超时、mem_limit、scratch 使用、buffer/thread 和并发资源边界角度分析。\n");
-            builder.append("- 如果日志已明显指向 SQL 模式或 HDFS/YARN 上下游问题，要明确说明参数优化不是唯一解。\n");
+            builder.append("- 如果日志明显指向 SQL 模式或 HDFS/YARN 上下游问题，要说明参数优化不是唯一解。\n");
         } else {
             builder.append("- 围绕当前组件最关键的线程、队列、内存、超时和并发参数给出建议。\n");
         }
@@ -306,7 +306,7 @@ public class ParameterOptimizationLlmService {
         List<String> titles = new ArrayList<String>();
         while (matcher.find()) {
             starts.add(matcher.start());
-            titles.add(matcher.group(1));
+            titles.add(matcher.group(1).trim());
         }
         if (starts.isEmpty()) {
             throw new IllegalArgumentException("No structured sections found in parameter optimization response");
@@ -379,7 +379,7 @@ public class ParameterOptimizationLlmService {
         if (!hasText(rawLine)) {
             return "";
         }
-        return rawLine.trim().replaceFirst("^[\\-•●\\d\\.\\s]+", "").trim();
+        return rawLine.trim().replaceFirst("^[\\-•·\\d\\.\\s]+", "").trim();
     }
 
     private List<String> fallbackEvidence(ParameterOptimizationContextPreview context) {
@@ -431,8 +431,8 @@ public class ParameterOptimizationLlmService {
 
     private List<String> fallbackValidation() {
         return Arrays.asList(
-            "先记录当前参数值、当前服务状态和关键症状，确保存在明确回滚点。",
-            "灰度调整后持续观察服务日志、JMX 指标与业务现象是否改善。",
+            "先记录当前参数值、服务状态和关键症状，确保存在明确回滚点。",
+            "灰度调整后持续观察服务日志、JMX 指标和业务现象是否改善。",
             "确认没有引入新的超时、内存或并发副作用后，再考虑扩大调整范围。"
         );
     }
@@ -448,7 +448,7 @@ public class ParameterOptimizationLlmService {
             builder.append("已采集组件版本 ").append(context.getComponentVersion()).append("。");
         }
         if (!ruleAnalysis.getFindings().isEmpty()) {
-            builder.append("当前重点问题包括：")
+            builder.append("当前重点问题包括: ")
                 .append(String.join("；", ruleAnalysis.getFindings().subList(0, Math.min(2, ruleAnalysis.getFindings().size()))))
                 .append("。");
         }
@@ -466,13 +466,12 @@ public class ParameterOptimizationLlmService {
     }
 
     private String buildSystemPrompt() {
-        return "你是 CDP / Hadoop 平台上的资深参数优化专家，专门分析 HDFS、YARN、Hive on Tez 和 Impala 的参数调优问题。"
+        return "你是 CDP / Hadoop 平台的资深参数优化专家，专门分析 HDFS、YARN、Hive on Tez 和 Impala 的参数调优问题。"
             + "你必须使用简体中文回答，不要返回 JSON，不要返回 Markdown 代码块，也不要暴露推理过程。"
             + "你必须优先依据输入中的当前版本、当前配置、当前服务日志、管理员补充的源码线索和知识库依据来判断，不允许臆测未提供的实现细节。"
             + "如果更可能是网络、SQL、数据质量、资源规划或上下游组件问题，而不是参数本身问题，也必须明确指出。"
-            + "你必须严格按以下 6 个章节输出："
-            + "【参数问题总结】、【建议调整项】、【为什么这样优化】、【预期收益】、【风险提示】、【验证步骤】。"
-            + "【建议调整项】章节每一行必须使用固定格式：参数名 | 当前值 | 建议值 | 调整原因。";
+            + "你必须严格按以下 6 个章节输出: 【参数问题总结】【建议调整项】【为什么这样优化】【预期收益】【风险提示】【验证步骤】。"
+            + "【建议调整项】章节每一行必须使用固定格式: 参数名 | 当前值 | 建议值 | 调整原因。";
     }
 
     private Map<String, String> message(String role, String content) {
@@ -616,7 +615,7 @@ public class ParameterOptimizationLlmService {
     private RestTemplate createRestTemplate(DiagnosisLlmSettingsEntity settings) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Math.max(settings.getConnectTimeoutMs(), 10000));
-        factory.setReadTimeout(Math.max(settings.getReadTimeoutMs(), 120000));
+        factory.setReadTimeout(Math.max(settings.getReadTimeoutMs(), 180000));
         return new RestTemplate(factory);
     }
 

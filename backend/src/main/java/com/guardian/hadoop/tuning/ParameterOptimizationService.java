@@ -78,6 +78,10 @@ public class ParameterOptimizationService {
         return configSnapshotService.collect(serviceType);
     }
 
+    public ParameterOptimizationContextPreview getCurrentContext(String serviceType, boolean forceRefresh) {
+        return configSnapshotService.collect(serviceType, forceRefresh);
+    }
+
     @Transactional
     public ParameterOptimizationResult analyze(ParameterOptimizationRequest request) {
         validateRequest(request);

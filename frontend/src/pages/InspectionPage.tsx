@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { LoadingButton } from "../components/LoadingButton";
 import {
   createClusterInspectionReport,
   downloadClusterInspectionReportDocx,
@@ -178,22 +179,23 @@ export function InspectionPage() {
       <section className="hero hero-grid panel">
         <div className="hero-copy">
           <p className="eyebrow">集群巡检</p>
-          <h2>基于 CM 当前状态、角色日志、JMX、未关闭事件和知识库生成正式巡检报告</h2>
+          <h2>基于 CM 当前状态、角色日志、JMX、未关闭事件与知识库生成正式巡检报告</h2>
           <p className="lead">
-            巡检报告改为后端异步生成，前端只负责发起任务和轮询结果，避免大模型长耗时直接拖慢页面。
+            巡检报告由后端异步生成，前端负责发起任务、轮询状态和导出结果，避免大模型长耗时直接拖慢页面。
           </p>
           <div className="detail-actions">
-            <button className="primary-button" disabled={creating} onClick={() => void handleCreate()} type="button">
-              {creating ? "已提交..." : "生成巡检报告"}
-            </button>
-            <button
+            <LoadingButton className="primary-button" loading={creating} loadingText="正在提交巡检任务" onClick={() => void handleCreate()}>
+              生成巡检报告
+            </LoadingButton>
+            <LoadingButton
               className="secondary-button"
               disabled={!selectedReport || selectedReport.status !== "COMPLETED" || exporting}
+              loading={exporting}
+              loadingText="正在导出 DOCX"
               onClick={() => void handleExport()}
-              type="button"
             >
-              {exporting ? "导出中..." : "导出 DOCX"}
-            </button>
+              导出 DOCX
+            </LoadingButton>
           </div>
         </div>
 

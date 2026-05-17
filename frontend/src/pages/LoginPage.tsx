@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { LoadingButton } from "../components/LoadingButton";
 import { login } from "../lib/api";
 import type { CurrentUser } from "../lib/types";
 
@@ -65,9 +66,9 @@ export function LoginPage({ onLogin }: LoginPageProps) {
               <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
             </label>
 
-            <button className="primary-button" disabled={submitting} type="submit">
-              {submitting ? "登录中..." : "登录"}
-            </button>
+            <LoadingButton className="primary-button" loading={submitting} loadingText="正在校验身份" type="submit">
+              登录
+            </LoadingButton>
 
             {error ? <div className="error-message">{error}</div> : null}
           </form>

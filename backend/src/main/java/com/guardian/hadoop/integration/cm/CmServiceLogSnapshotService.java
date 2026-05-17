@@ -236,7 +236,10 @@ public class CmServiceLogSnapshotService {
 
         List<String> normalizedServiceTypes = normalizeServiceTypes(serviceTypes);
         List<CmServiceLogSnapshotEntity> serviceLogs = loadIncidentServiceLogs(clusterName, normalizedServiceTypes, lookupStart);
-        serviceLogs.removeIf(entity -> !isPersistableLogText(entity.getLogText()));
+        serviceLogs.removeIf(entity ->
+            !isPersistableLogText(entity.getLogText())
+                || !"WARN_ERROR".equalsIgnoreCase(defaultIfBlank(entity.getLogType(), ""))
+        );
         if (serviceLogs.isEmpty()) {
             return Collections.emptyList();
         }
@@ -269,9 +272,6 @@ public class CmServiceLogSnapshotService {
                 continue;
             }
             logs.add(CmServiceLogSnapshotRecord.fromEntity(entity));
-            if (logs.size() >= 12) {
-                break;
-            }
         }
         return logs;
     }
@@ -280,42 +280,55 @@ public class CmServiceLogSnapshotService {
                                                                      List<String> serviceTypes,
                                                                      Instant lookupStart) {
         PageRequest recentPage = PageRequest.of(0, 300);
-        List<CmServiceLogSnapshotEntity> serviceLogs = new ArrayList<CmServiceLogSnapshotEntity>(
+        List<CmServiceLogSnapshotEntity> serviceLogs = filterDiagnosisLogs(new ArrayList<CmServiceLogSnapshotEntity>(
             repository.findLatestByClusterAndServiceTypesAfterIgnoreCase(
                 clusterName,
                 serviceTypes,
                 lookupStart,
                 recentPage
             )
-        );
+        ));
         if (!serviceLogs.isEmpty()) {
             return serviceLogs;
         }
 
-        serviceLogs.addAll(repository.findLatestByClusterAndServiceTypesIgnoreCase(clusterName, serviceTypes, recentPage));
+        serviceLogs = filterDiagnosisLogs(repository.findLatestByClusterAndServiceTypesIgnoreCase(clusterName, serviceTypes, recentPage));
         if (!serviceLogs.isEmpty()) {
             return serviceLogs;
         }
 
-        serviceLogs.addAll(repository.findLatestByServiceTypesAfterIgnoreCase(serviceTypes, lookupStart, recentPage));
+        serviceLogs = filterDiagnosisLogs(repository.findLatestByServiceTypesAfterIgnoreCase(serviceTypes, lookupStart, recentPage));
         if (!serviceLogs.isEmpty()) {
             return serviceLogs;
         }
 
-        serviceLogs.addAll(repository.findLatestByServiceTypesIgnoreCase(serviceTypes, recentPage));
+        serviceLogs = filterDiagnosisLogs(repository.findLatestByServiceTypesIgnoreCase(serviceTypes, recentPage));
         if (!serviceLogs.isEmpty()) {
             return serviceLogs;
         }
 
-        serviceLogs.addAll(repository.findLatestByClusterAfterIgnoreCase(clusterName, lookupStart, recentPage));
+        serviceLogs = filterDiagnosisLogs(repository.findLatestByClusterAfterIgnoreCase(clusterName, lookupStart, recentPage));
         if (!serviceLogs.isEmpty()) {
             return serviceLogs;
         }
 
-        serviceLogs.addAll(repository.findLatestByClusterIgnoreCase(clusterName, recentPage));
-        return serviceLogs;
+        return filterDiagnosisLogs(repository.findLatestByClusterIgnoreCase(clusterName, recentPage));
     }
 
+    private List<CmServiceLogSnapshotEntity> filterDiagnosisLogs(List<CmServiceLogSnapshotEntity> serviceLogs) {
+        if (serviceLogs == null || serviceLogs.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<CmServiceLogSnapshotEntity> filtered = new ArrayList<CmServiceLogSnapshotEntity>();
+        for (CmServiceLogSnapshotEntity entity : serviceLogs) {
+            if (entity != null
+                && isPersistableLogText(entity.getLogText())
+                && "WARN_ERROR".equalsIgnoreCase(defaultIfBlank(entity.getLogType(), ""))) {
+                filtered.add(entity);
+            }
+        }
+        return filtered;
+    }
     private List<CmServiceLogSnapshotEntity> dedupeSnapshots(List<CmServiceLogSnapshotEntity> snapshots, Instant collectedAt) {
         if (snapshots == null || snapshots.isEmpty()) {
             return Collections.emptyList();
@@ -533,3 +546,4 @@ public class CmServiceLogSnapshotService {
         repository.deleteByCollectedAtBefore(Instant.now().minusSeconds(retentionHours * 3600L));
     }
 }
+

@@ -7,5 +7,7 @@ public interface ClusterInspectionReportRepository extends JpaRepository<Cluster
 
     List<ClusterInspectionReportEntity> findTop50ByOrderByCreatedAtDescIdDesc();
 
+    List<ClusterInspectionReportEntity> findTop10ByOrderByCreatedAtDescIdDesc();
+
     long countByStatus(String status);
 }

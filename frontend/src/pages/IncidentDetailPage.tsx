@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { DiagnosisCard } from "../components/DiagnosisCard";
+import { LoadingButton } from "../components/LoadingButton";
 import { SeverityBadge } from "../components/SeverityBadge";
 import {
   closeIncident,
@@ -288,7 +289,8 @@ export function IncidentDetailPage() {
   const currentDiagnosis = useMemo(() => (currentResult ? buildCurrentDiagnosis(currentResult, diagnoses) : null), [currentResult, diagnoses]);
   const signalHighlights = aiGuidance?.signalHighlights ?? [];
   const jmxInsights = aiGuidance?.jmxInsights ?? [];
-  const visibleServiceLogs = useMemo(() => serviceLogs.slice(0, 12), [serviceLogs]);
+  const diagnosticServiceLogs = useMemo(() => serviceLogs.filter((item) => item.logType === "WARN_ERROR"), [serviceLogs]);
+  const visibleServiceLogs = useMemo(() => diagnosticServiceLogs.slice(0, 20), [diagnosticServiceLogs]);
   const currentAction = useMemo(() => actions[0] ?? null, [actions]);
 
   if (loadError) return <div className="panel empty-state">{loadError}</div>;
@@ -476,14 +478,14 @@ export function IncidentDetailPage() {
           <div className="detail-actions">
             <Link to="/incidents" className="button button-secondary">返回事件列表</Link>
             {incident.status !== "CLOSED" ? (
-              <button className="button button-secondary" disabled={isSuppressing} type="button" onClick={() => void handleSuppressToggle()}>
-                {isSuppressing ? "处理中..." : incident.governanceStatus === "SUPPRESSED" ? "恢复事件" : "抑制事件"}
-              </button>
+              <LoadingButton className="button button-secondary" loading={isSuppressing} loadingText="正在更新事件状态" onClick={() => void handleSuppressToggle()}>
+                {incident.governanceStatus === "SUPPRESSED" ? "恢复事件" : "抑制事件"}
+              </LoadingButton>
             ) : null}
             {incident.status !== "CLOSED" ? (
-              <button className="button button-secondary" disabled={isClosing} type="button" onClick={() => void handleCloseIncident()}>
-                {isClosing ? "关闭中..." : "关闭事件"}
-              </button>
+              <LoadingButton className="button button-secondary" loading={isClosing} loadingText="正在关闭事件" onClick={() => void handleCloseIncident()}>
+                关闭事件
+              </LoadingButton>
             ) : null}
           </div>
         </div>
@@ -509,14 +511,14 @@ export function IncidentDetailPage() {
           <span>{`当前事件证据：${incident.evidence.length} 条`}</span>
           <span>{`历史诊断：${diagnoses.length} 条`}</span>
           <span>{`知识命中：${knowledge.length} 条`}</span>
-          <span>{`服务日志：${serviceLogs.length} 条`}</span>
+          <span>{`服务日志：${diagnosticServiceLogs.length} 条`}</span>
           <span>{`JMX 信号：${jmxInsights.length} 条`}</span>
         </div>
 
         <div className="toolbar">
-          <button className="button" type="button" onClick={() => void handleCreateDiagnosisTask()} disabled={isSubmitting || incident.status === "CLOSED"}>
-            {isSubmitting ? "诊断执行中..." : "启动诊断任务"}
-          </button>
+          <LoadingButton className="button" disabled={incident.status === "CLOSED"} loading={isSubmitting} loadingText="整理日志并请求大模型" onClick={() => void handleCreateDiagnosisTask()}>
+            启动诊断任务
+          </LoadingButton>
           <button className="button button-secondary" type="button" onClick={() => setShowHistory((value) => !value)}>
             {showHistory ? "收起历史结果" : "查看历史结果"}
           </button>
@@ -530,6 +532,7 @@ export function IncidentDetailPage() {
           <div>
             <p className="eyebrow">事件服务日志</p>
             <h3>当前诊断输入</h3>
+            <p className="muted">仅展示并提交 WARN/ERROR 日志，PREVIEW/INFO 不参与诊断。</p>
           </div>
           <span className="muted">{isSignalLoading ? "刷新中..." : "已完成"}</span>
         </div>

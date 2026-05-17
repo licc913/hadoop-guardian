@@ -68,15 +68,10 @@ public class KnowledgeSuggestionService {
         Set<String> matchedKeywords = new LinkedHashSet<String>();
 
         String normalizedServiceType = safe(serviceType).toUpperCase(Locale.ROOT);
-        if (article.getDomain().equalsIgnoreCase(normalizedServiceType)) {
-            score += 12;
-            reasons.add("知识条目领域与当前服务类型一致。");
-        } else if ("HIVE_ON_TEZ".equals(normalizedServiceType) && "YARN".equalsIgnoreCase(article.getDomain())) {
-            score += 5;
-            reasons.add("Hive on Tez 场景通常需要同时检查 YARN 资源层。");
-        } else if ("CROSS_COMPONENT".equals(normalizedServiceType)) {
-            score += 3;
-            reasons.add("跨组件问题需要联动匹配多个处置方案。");
+        boolean hasDomainHint = !normalizedServiceType.isEmpty();
+        int domainScore = domainCompatibilityScore(article.getDomain(), normalizedServiceType);
+        if (hasDomainHint && domainScore <= 0) {
+            return new MatchCandidate(article, 0, Collections.<String>emptyList(), Collections.<String>emptyList());
         }
 
         for (String keyword : article.getMatchKeywords()) {
@@ -86,17 +81,51 @@ public class KnowledgeSuggestionService {
             }
         }
 
-        if (!matchedKeywords.isEmpty()) {
-            score += matchedKeywords.size() * 4;
-            reasons.add("命中关键词：" + String.join("、", matchedKeywords));
+        if (matchedKeywords.isEmpty()) {
+            return new MatchCandidate(article, 0, Collections.<String>emptyList(), Collections.<String>emptyList());
         }
+
+        if (domainScore > 0) {
+            score += domainScore;
+            reasons.add("knowledge domain matches current service family");
+        }
+        score += matchedKeywords.size() * 6;
+        reasons.add("matched log/event keywords: " + String.join(", ", matchedKeywords));
 
         if ("CRITICAL".equalsIgnoreCase(severity)) {
             score += 1;
-            reasons.add("当前事件等级较高，优先返回更保守的处置方案。");
+            reasons.add("critical incident, prioritize conservative runbook");
         }
 
         return new MatchCandidate(article, score, new ArrayList<String>(matchedKeywords), reasons);
+    }
+
+    private int domainCompatibilityScore(String articleDomain, String serviceType) {
+        String domain = safe(articleDomain).toUpperCase(Locale.ROOT);
+        String service = safe(serviceType).toUpperCase(Locale.ROOT);
+        if (domain.isEmpty() || service.isEmpty()) {
+            return 0;
+        }
+        if (domain.equals(service)) {
+            return 12;
+        }
+        if (containsAny(service, "HIVE", "TEZ") && containsAny(domain, "HIVE", "TEZ")) {
+            return 8;
+        }
+        if (containsAny(service, "IMPALA", "IMPALAD", "CATALOGD", "STATESTORE")
+            && containsAny(domain, "IMPALA", "IMPALAD", "CATALOGD", "STATESTORE")) {
+            return 8;
+        }
+        return 0;
+    }
+
+    private boolean containsAny(String value, String... tokens) {
+        for (String token : tokens) {
+            if (value.contains(token)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String buildHaystack(IncidentEntity incident) {
@@ -154,3 +183,4 @@ public class KnowledgeSuggestionService {
         }
     }
 }
+

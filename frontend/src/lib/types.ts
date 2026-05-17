@@ -28,7 +28,7 @@ export type Diagnosis = {
   rootCause: string;
   confidence: number;
   impactLevel: string;
-  crossComponentPath: string;
+  crossComponentPath?: string;
   recommendations: string[];
   followUps: string[];
   createdAt: string;
@@ -247,6 +247,17 @@ export type CmCurrentStatusResponse = {
   recentLogs: CmServiceLogSnapshot[];
 };
 
+export type CmLogCollectionStatus = {
+  running: boolean;
+  lastSuccess: boolean;
+  lastMessage: string;
+  lastRecentLogCount: number;
+  lastStartedAt: string | null;
+  lastFinishedAt: string | null;
+  lastDurationMs: number;
+  collectionFixedDelayMs: number;
+};
+
 export type SystemStatus = {
   backendUp: boolean;
   clouderaManagerEnabled: boolean;
@@ -263,6 +274,39 @@ export type SystemStatus = {
   lastInspectionCompletedAt: string | null;
   lastInspectionStatus: string;
   lastInspectionMessage: string;
+};
+
+export type OperationTaskStatusItem = {
+  taskType: string;
+  taskId: string;
+  status: string;
+  title: string;
+  message: string;
+  startedAt: string | null;
+  updatedAt: string | null;
+  durationMs: number | null;
+};
+
+export type OperationTaskStatusResponse = {
+  generatedAt: string;
+  runningCount: number;
+  failedCount: number;
+  recentCount: number;
+  recentTasks: OperationTaskStatusItem[];
+};
+
+export type LlmCallRecord = {
+  id: number;
+  feature: string;
+  model: string | null;
+  status: string;
+  promptChars: number;
+  responseChars: number;
+  durationMs: number | null;
+  errorMessage: string | null;
+  promptPreview: string | null;
+  createdAt: string;
+  completedAt: string | null;
 };
 
 export type IncidentGovernanceResponse = {
@@ -509,6 +553,29 @@ export type ParameterOptimizationContextPreview = {
   recentSignals: string[];
 };
 
+export type CmConfigCheckStep = {
+  step: string;
+  success: boolean;
+  endpoint: string;
+  itemCount: number;
+  durationMs: number;
+  message: string;
+};
+
+export type CmConfigCheckResponse = {
+  configured: boolean;
+  success: boolean;
+  clusterName: string;
+  serviceType: string;
+  serviceName: string;
+  message: string;
+  serviceConfigCount: number;
+  roleConfigGroupCount: number;
+  roleConfigCount: number;
+  steps: CmConfigCheckStep[];
+  checkedAt: string;
+};
+
 export type ParameterOptimizationResult = {
   id: number;
   clusterName: string;
@@ -530,4 +597,15 @@ export type ParameterOptimizationResult = {
   analysisSource: string;
   createdBy: string;
   createdAt: string;
+};
+
+export type ParameterOptimizationTaskResponse = {
+  taskId: string;
+  status: "RUNNING" | "COMPLETED" | "FAILED";
+  message: string;
+  resultId: number | null;
+  result: ParameterOptimizationResult | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
 };

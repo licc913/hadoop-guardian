@@ -27,7 +27,6 @@ export function DiagnosisCard({ diagnosis }: DiagnosisCardProps) {
 
       <div className="inline-metadata">
         <span>{`影响等级：${diagnosis.impactLevel}`}</span>
-        <span>{`跨组件路径：${diagnosis.crossComponentPath}`}</span>
         <span>{`生成时间：${formatTime(diagnosis.createdAt)}`}</span>
       </div>
 
