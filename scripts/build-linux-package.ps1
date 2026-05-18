@@ -55,11 +55,9 @@ Copy-Item -Force $jarSource $jarTarget
 Copy-Item -Recurse -Force (Join-Path $frontendDir "dist\*") (Join-Path $stagingDir "frontend")
 
 $deployEnvSh = Join-Path $stagingDir "config\deploy-env.sh"
-$deployEnvCompat = Join-Path $stagingDir "config\deploy-env"
 if (-not (Test-Path $deployEnvSh) -or ((Get-Item $deployEnvSh).Length -le 0)) {
     throw "Deploy config is missing or empty: $deployEnvSh"
 }
-Copy-Item -Force $deployEnvSh $deployEnvCompat
 
 if (-not (Test-Path $postgresRuntimeSource)) {
     throw "Embedded PostgreSQL runtime archive not found: $postgresRuntimeSource"
@@ -78,7 +76,6 @@ Get-ChildItem (Join-Path $projectRoot "sql") -Filter *.sql |
 
 $requiredPackageFiles = @(
     "config\deploy-env.sh",
-    "config\deploy-env",
     "deploy.sh",
     "start.sh",
     "stop.sh",
