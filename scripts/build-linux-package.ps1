@@ -54,6 +54,13 @@ Copy-Item -Recurse -Force (Join-Path $templateDir "*") $stagingDir
 Copy-Item -Force $jarSource $jarTarget
 Copy-Item -Recurse -Force (Join-Path $frontendDir "dist\*") (Join-Path $stagingDir "frontend")
 
+$deployEnvSh = Join-Path $stagingDir "config\deploy-env.sh"
+$deployEnvCompat = Join-Path $stagingDir "config\deploy-env"
+if (-not (Test-Path $deployEnvSh) -or ((Get-Item $deployEnvSh).Length -le 0)) {
+    throw "Deploy config is missing or empty: $deployEnvSh"
+}
+Copy-Item -Force $deployEnvSh $deployEnvCompat
+
 if (-not (Test-Path $postgresRuntimeSource)) {
     throw "Embedded PostgreSQL runtime archive not found: $postgresRuntimeSource"
 }
@@ -68,6 +75,29 @@ Get-ChildItem (Join-Path $projectRoot "sql") -Filter *.sql |
     ForEach-Object {
         Copy-Item -Force $_.FullName (Join-Path $stagingDir ("sql\" + $_.Name))
     }
+
+$requiredPackageFiles = @(
+    "config\deploy-env.sh",
+    "config\deploy-env",
+    "deploy.sh",
+    "start.sh",
+    "stop.sh",
+    "status.sh",
+    "scripts\common.sh",
+    "app\hadoop-guardian-backend.jar",
+    "frontend\index.html",
+    "runtime\percona-postgresql-14.22-ssl1.1-linux-x86_64.tar.gz"
+)
+
+foreach ($relativePath in $requiredPackageFiles) {
+    $requiredPath = Join-Path $stagingDir $relativePath
+    if (-not (Test-Path $requiredPath)) {
+        throw "Required package file is missing: $relativePath"
+    }
+    if ((Get-Item $requiredPath).Length -le 0) {
+        throw "Required package file is empty: $relativePath"
+    }
+}
 
 if ($tar) {
     & $tar.Source -czf $tarPath -C $releaseRoot $releaseName
